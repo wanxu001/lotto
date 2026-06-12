@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>幸运选号3.0</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body { height: 100%; }
+
+    body {
+      font-family: 'Microsoft YaHei', 'PingFang SC', -apple-system, sans-serif;
+      background: #0a0a1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    /* 动态光晕背景 */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 70% 50% at 20% 30%, rgba(120,80,255,0.12) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 60% at 80% 70%, rgba(255,80,120,0.10) 0%, transparent 55%),
+        radial-gradient(ellipse 60% 40% at 50% 10%, rgba(80,180,255,0.08) 0%, transparent 50%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* 网格纹理 */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 860px;
+      box-sizing: border-box;
+      text-align: center;
+      padding: 32px 20px 40px;
+      position: relative;
+      z-index: 1;
+    }
+
+    h1 {
+      color: #e8e4ff;
+      margin: 0 0 8px 0;
+      font-size: clamp(2rem, 6vw, 2.8rem);
+      font-weight: 900;
+      letter-spacing: 6px;
+      text-shadow:
+        0 0 40px rgba(130,140,255,0.5),
+        0 0 80px rgba(130,140,255,0.25),
+        0 2px 4px rgba(0,0,0,0.5);
+      position: relative;
+    }
+    h1::after {
+      content: '';
+      display: block;
+      width: 60px;
+      height: 2px;
+      margin: 10px auto 0;
+      background: linear-gradient(90deg, transparent, rgba(130,140,255,0.6), transparent);
+      border-radius: 2px;
+    }
+
+    /* 号码池区域 - 玻璃拟态 */
+    .pool-section {
+      background: rgba(255,255,255,0.04);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      padding: 18px 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.04);
+      contain: layout style;
+    }
+    .pool-label {
+      color: rgba(200,200,230,0.7);
+      font-size: 0.82rem;
+      margin-bottom: 12px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+    .pool {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+      contain: layout style;
+    }
+    .ball {
+      width: 2.5em;
+      height: 2.5em;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1em;
+      cursor: default;
+      transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.15s ease;
+      position: relative;
+      user-select: none;
+      will-change: transform;
+    }
+    /* 默认球 - 暗色玻璃感 */
+    .ball.front-ball,
+    .ball.back-ball {
+      background: rgba(60,60,80,0.5);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      border: 1px solid rgba(255,255,255,0.06);
+      color: rgba(180,180,200,0.6);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    /* 光标悬停 - 霓虹金 */
+    .ball.cursor {
+      background: radial-gradient(circle at 35% 30%, #fff9c4 0%, #ffe082 25%, #ffb300 60%, #ff8f00 100%) !important;
+      color: #1a1a00 !important;
+      transform: scale(1.3) !important;
+      box-shadow:
+        0 0 16px 4px rgba(255,180,0,0.45),
+        0 0 28px 6px rgba(255,160,0,0.18),
+        0 0 4px rgba(255,220,0,0.6) !important;
+      z-index: 10;
+      border-color: rgba(255,200,50,0.4) !important;
+    }
+    /* 前区选中 - 霓虹红 */
+    .ball.front-ball.selected {
+      background: radial-gradient(circle at 35% 30%, #ff8080 0%, #ff4466 35%, #e02040 65%, #b01030 100%) !important;
+      color: white !important;
+      box-shadow:
+        0 0 10px 2px rgba(255,60,80,0.35),
+        0 0 18px 3px rgba(255,40,60,0.12),
+        0 3px 10px rgba(0,0,0,0.35);
+      transform: scale(1.08);
+      border: 1px solid rgba(255,100,120,0.3) !important;
+    }
+    /* 后区选中 - 霓虹蓝 */
+    .ball.back-ball.selected {
+      background: radial-gradient(circle at 35% 30%, #80d8ff 0%, #40b0ff 35%, #2080e0 65%, #1050b0 100%) !important;
+      color: white !important;
+      box-shadow:
+        0 0 10px 2px rgba(64,160,255,0.35),
+        0 0 18px 3px rgba(32,128,255,0.12),
+        0 3px 10px rgba(0,0,0,0.35);
+      transform: scale(1.08);
+      border: 1px solid rgba(80,160,255,0.3) !important;
+    }
+
+    /* 结果区域 */
+    .result-section {
+      background: rgba(255,255,255,0.04);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      padding: 20px 16px;
+      margin: 14px 0;
+      min-height: 80px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.04);
+      contain: layout style;
+    }
+    .result-label {
+      color: #aaa;
+      font-size: 0.85rem;
+      letter-spacing: 2px;
+    }
+    .result-balls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: nowrap;
+      justify-content: center;
+    }
+    .result-ball {
+      width: 2.8em;
+      height: 2.8em;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+      font-size: 1.15em;
+      opacity: 0;
+      transform: scale(0.3);
+      transition: opacity 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .result-ball.show {
+      opacity: 1;
+      transform: scale(1);
+    }
+    .result-ball.front {
+      background: radial-gradient(circle at 35% 30%, #ff8080 0%, #ff4466 35%, #e02040 65%, #b01030 100%);
+      color: white;
+      box-shadow:
+        0 0 12px 2px rgba(255,60,80,0.35),
+        0 0 20px 3px rgba(255,40,60,0.12),
+        0 4px 12px rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,100,120,0.25);
+    }
+    .result-ball.back {
+      background: radial-gradient(circle at 35% 30%, #80d8ff 0%, #40b0ff 35%, #2080e0 65%, #1050b0 100%);
+      color: white;
+      box-shadow:
+        0 0 12px 2px rgba(64,160,255,0.35),
+        0 0 20px 3px rgba(32,128,255,0.12),
+        0 4px 12px rgba(0,0,0,0.3);
+      border: 1px solid rgba(80,160,255,0.25);
+    }
+    .result-divider {
+      color: rgba(200,200,220,0.5);
+      font-size: 1.5em;
+      font-weight: 300;
+    }
+    .result-placeholder {
+      color: rgba(150,150,170,0.5);
+      font-size: 0.85rem;
+      letter-spacing: 1px;
+    }
+
+    /* 按钮区域 */
+    .button-container {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      margin: 18px 0 10px;
+    }
+    button {
+      flex: 1;
+      max-width: 240px;
+      padding: 15px 20px;
+      white-space: nowrap;
+      font-size: clamp(1.05rem, 3.5vw, 1.35rem);
+      font-weight: 700;
+      color: white;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      cursor: pointer;
+      outline: none;
+      letter-spacing: 1px;
+      -webkit-tap-highlight-color: transparent;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    button::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 12px;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      background: linear-gradient(135deg, rgba(255,255,255,0.15) 0%, transparent 50%);
+      pointer-events: none;
+    }
+    button:hover:not(:disabled)::after { opacity: 1; }
+    button:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 25px rgba(0,0,0,0.4);
+    }
+    button:active:not(:disabled) {
+      transform: translateY(0);
+      transition: transform 0.05s ease;
+    }
+    button:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      filter: grayscale(30%);
+    }
+    #ssqButton {
+      background: linear-gradient(135deg, #ff4466 0%, #e02040 40%, #c83848 100%);
+      border-color: rgba(255,100,120,0.3);
+      box-shadow: 0 4px 16px rgba(224,32,64,0.3), 0 1px 3px rgba(0,0,0,0.3);
+    }
+    #ssqButton:hover:not(:disabled) {
+      box-shadow: 0 8px 28px rgba(255,60,80,0.45), 0 1px 3px rgba(0,0,0,0.3);
+    }
+    #dltButton {
+      background: linear-gradient(135deg, #40c070 0%, #28a050 40%, #2a9040 100%);
+      border-color: rgba(80,200,120,0.3);
+      box-shadow: 0 4px 16px rgba(40,160,80,0.3), 0 1px 3px rgba(0,0,0,0.3);
+    }
+    #dltButton:hover:not(:disabled) {
+      box-shadow: 0 8px 28px rgba(40,200,80,0.45), 0 1px 3px rgba(0,0,0,0.3);
+    }
+    .hint {
+      text-align: center;
+      font-size: 0.78rem;
+      color: rgba(150,150,170,0.45);
+      margin-top: 6px;
+      letter-spacing: 1px;
+    }
+
+    /* 状态文字 */
+    .status-text {
+      color: #ffd866;
+      font-size: 0.92rem;
+      min-height: 1.3em;
+      letter-spacing: 2px;
+      font-weight: 600;
+    }
+
+    @media (max-width: 480px) {
+      .container { padding: 20px 12px 32px; }
+      .ball { width: 2.1em; height: 2.1em; font-size: 0.85em; }
+      .pool { gap: 6px; }
+      .result-ball { width: 2.3em; height: 2.3em; font-size: 0.95em; }
+      .pool-section { padding: 14px 10px; }
+      .pool-section, .result-section, .ball.front-ball, .ball.back-ball {
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+      }
+      button { padding: 14px 16px; font-size: 1rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>幸运选号</h1>
+
+    <div class="pool-section">
+      <div class="pool-label">前区 (1-35)</div>
+      <div class="pool" id="frontPool"></div>
+    </div>
+
+    <div class="pool-section">
+      <div class="pool-label">后区 (1-12)</div>
+      <div class="pool" id="backPool"></div>
+    </div>
+
+    <div class="status-text" id="statusText"></div>
+
+    <div class="result-section">
+      <div class="result-balls" id="resultBalls">
+        <div class="result-placeholder">双击按钮选取你的幸运号码吧~</div>
+      </div>
+    </div>
+
+    <div class="button-container">
+      <button id="ssqButton">🎯 双色球 (双击)</button>
+      <button id="dltButton">🎯 大乐透 (双击)</button>
+    </div>
+    <div class="hint">为避免误触，请双击按钮刷新</div>
+  </div>
+
+  <script>
+    let spinning = false;
+
+    // 缓存常用 DOM 引用
+    const $ = id => document.getElementById(id);
+    const frontLabel = document.querySelector('#frontPool').closest('.pool-section').querySelector('.pool-label');
+    const backLabel = document.querySelector('#backPool').closest('.pool-section').querySelector('.pool-label');
+    const statusText = $('statusText');
+    const resultBalls = $('resultBalls');
+    const ssqBtn = $('ssqButton');
+    const dltBtn = $('dltButton');
+
+    function fmt(n) { return String(n).padStart(2, '0'); }
+    function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+    // 构建球元素映射 { num: element }，初始化后复用
+    const ballMapCache = {};
+    function buildBallMap(containerId) {
+      const map = {};
+      const balls = $(containerId).querySelectorAll('.ball');
+      for (let i = 0; i < balls.length; i++) {
+        map[+balls[i].textContent] = balls[i];
+      }
+      return map;
+    }
+
+    function getBallMap(containerId) {
+      return ballMapCache[containerId] || (ballMapCache[containerId] = buildBallMap(containerId));
+    }
+
+    function initPool(containerId, count, className) {
+      const container = $(containerId);
+      container.replaceChildren();
+      delete ballMapCache[containerId];
+      const frag = document.createDocumentFragment();
+      for (let i = 1; i <= count; i++) {
+        const ball = document.createElement('div');
+        ball.className = 'ball ' + className;
+        ball.textContent = fmt(i);
+        frag.appendChild(ball);
+      }
+      container.appendChild(frag);
+    }
+
+    // 优化版跳动选号：预缓存球映射，requestAnimationFrame 驱动
+    function jumpSelect(containerId, target, onDone) {
+      const totalSteps = 22;
+      let step = 0;
+      let currentBall = null;
+      const ballMap = getBallMap(containerId);
+      let avail = Object.keys(ballMap).map(Number);
+      const delays = [10,10,10,10,10,10, 20,20,20,20,20, 30,30,30,30,30, 50,50,50,50, 70,70];
+      let lastTime = 0;
+      let delayIdx = 0;
+      let rafId;
+
+      function tick(ts) {
+        if (!lastTime) lastTime = ts;
+        if (ts - lastTime < delays[delayIdx]) { rafId = requestAnimationFrame(tick); return; }
+        lastTime = ts;
+        delayIdx++;
+
+        if (currentBall) currentBall.classList.remove('cursor');
+        step++;
+        let num;
+        if (step >= totalSteps) {
+          num = target;
+        } else {
+          if (step >= totalSteps - 4) {
+            const nearby = [];
+            for (let i = 0; i < avail.length; i++) {
+              if (Math.abs(avail[i] - target) <= 5) nearby.push(avail[i]);
+            }
+            const cand = nearby.length > 1 ? nearby : (avail.length > 1 ? avail : [target]);
+            num = cand[Math.floor(Math.random() * cand.length)];
+          } else {
+            num = avail[Math.floor(Math.random() * avail.length)];
+          }
+        }
+        currentBall = ballMap[num];
+        if (currentBall) currentBall.classList.add('cursor');
+
+        if (step >= totalSteps) {
+          rafId = requestAnimationFrame(() => {
+            if (currentBall) {
+              currentBall.classList.remove('cursor');
+              currentBall.classList.add('selected');
+              // 从可用列表中移除
+              const idx = avail.indexOf(target);
+              if (idx > -1) avail.splice(idx, 1);
+            }
+            onDone();
+          });
+        } else {
+          rafId = requestAnimationFrame(tick);
+        }
+      }
+
+      rafId = requestAnimationFrame(tick);
+    }
+
+    function selectSequence(picks, containerId, onAllDone) {
+      let idx = 0;
+      function next() {
+        if (idx >= picks.length) { onAllDone(); return; }
+        jumpSelect(containerId, picks[idx++], () => { requestAnimationFrame(() => setTimeout(next, 50)); });
+      }
+      next();
+    }
+
+    function shuffle(arr) {
+      const a = arr.slice();
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    function generateDlt() {
+      const frontSet = new Set();
+      while (frontSet.size < 5) frontSet.add(randInt(1, 35));
+      const front = [...frontSet].sort((a,b)=>a-b);
+      const backSet = new Set();
+      while (backSet.size < 2) backSet.add(randInt(1, 12));
+      const back = [...backSet].sort((a,b)=>a-b);
+      return { front, back, frontShuffle: shuffle(front), backShuffle: shuffle(back) };
+    }
+
+    function generateSsq() {
+      const redSet = new Set();
+      while (redSet.size < 6) redSet.add(randInt(1, 33));
+      const red = [...redSet].sort((a,b)=>a-b);
+      const blue = [randInt(1, 16)];
+      return { red, blue, redShuffle: shuffle(red) };
+    }
+
+    function showResult(frontNums, backNums) {
+      resultBalls.replaceChildren();
+      const frag = document.createDocumentFragment();
+
+      frontNums.forEach((n, i) => {
+        const ball = document.createElement('div');
+        ball.className = 'result-ball front';
+        ball.textContent = fmt(n);
+        frag.appendChild(ball);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => ball.classList.add('show'));
+        });
+      });
+
+      const div = document.createElement('div');
+      div.className = 'result-divider';
+      div.textContent = '+';
+      frag.appendChild(div);
+
+      backNums.forEach((n, i) => {
+        const ball = document.createElement('div');
+        ball.className = 'result-ball back';
+        ball.textContent = fmt(n);
+        frag.appendChild(ball);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => ball.classList.add('show'));
+        });
+      });
+
+      resultBalls.appendChild(frag);
+    }
+
+    function setStatus(text) { statusText.textContent = text; }
+
+    function disableButtons(v) { ssqBtn.disabled = v; dltBtn.disabled = v; }
+
+    function pickDlt() {
+      if (spinning) return;
+      spinning = true;
+      disableButtons(true);
+      resultBalls.innerHTML = '<div class="result-placeholder">选号中...</div>';
+
+      initPool('frontPool', 35, 'front-ball');
+      frontLabel.textContent = '前区 (1-35)';
+      initPool('backPool', 12, 'back-ball');
+      backLabel.textContent = '后区 (1-12)';
+
+      const nums = generateDlt();
+      setStatus('正在选取幸运号码');
+
+      selectSequence(nums.frontShuffle, 'frontPool', () => {
+        setStatus('正在选取幸运号码');
+        requestAnimationFrame(() => {
+          selectSequence(nums.backShuffle, 'backPool', () => {
+            setStatus('✨本次幸运号码✨');
+            showResult(nums.front, nums.back);
+            spinning = false;
+            disableButtons(false);
+          });
+        });
+      });
+    }
+
+    function pickSsq() {
+      if (spinning) return;
+      spinning = true;
+      disableButtons(true);
+      resultBalls.innerHTML = '<div class="result-placeholder">选号中...</div>';
+
+      initPool('frontPool', 33, 'front-ball');
+      frontLabel.textContent = '红球 (1-33)';
+      initPool('backPool', 16, 'back-ball');
+      backLabel.textContent = '蓝球 (1-16)';
+
+      const nums = generateSsq();
+      setStatus('正在选取幸运号码');
+
+      selectSequence(nums.redShuffle, 'frontPool', () => {
+        setStatus('正在选取幸运号码');
+        requestAnimationFrame(() => {
+          selectSequence(nums.blue, 'backPool', () => {
+            setStatus('✨本次幸运号码✨');
+            showResult(nums.red, nums.blue);
+            spinning = false;
+            disableButtons(false);
+          });
+        });
+      });
+    }
+
+    function initPage() {
+      spinning = false;
+      resultBalls.innerHTML = '<div class="result-placeholder">双击按钮选取你的幸运号码吧~</div>';
+      statusText.textContent = '✨本次幸运号码✨';
+      disableButtons(false);
+      initPool('frontPool', 35, 'front-ball');
+      frontLabel.textContent = '前区 (1-35)';
+      initPool('backPool', 12, 'back-ball');
+      backLabel.textContent = '后区 (1-12)';
+    }
+
+    function setupDoubleTap(btn, fn) {
+      let lastTap = 0;
+      btn.addEventListener('click', () => {
+        const now = Date.now();
+        if (now - lastTap < 350) fn();
+        lastTap = now;
+      });
+    }
+
+    setupDoubleTap(ssqBtn, pickSsq);
+    setupDoubleTap(dltBtn, pickDlt);
+
+    window.onload = initPage;
+  </script>
+</body>
+</html>
