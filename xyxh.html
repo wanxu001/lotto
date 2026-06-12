@@ -284,18 +284,14 @@
     #ssqButton {
       background: linear-gradient(135deg, #ff4466 0%, #e02040 40%, #c83848 100%);
       border-color: rgba(255,100,120,0.3);
-      box-shadow: 0 4px 12px rgba(224,32,64,0.2), 0 1px 3px rgba(0,0,0,0.3);
     }
     #ssqButton:hover:not(:disabled) {
-      box-shadow: 0 8px 20px rgba(255,60,80,0.3), 0 1px 3px rgba(0,0,0,0.3);
     }
     #dltButton {
       background: linear-gradient(135deg, #40c070 0%, #28a050 40%, #2a9040 100%);
       border-color: rgba(80,200,120,0.3);
-      box-shadow: 0 4px 16px rgba(40,160,80,0.3), 0 1px 3px rgba(0,0,0,0.3);
     }
     #dltButton:hover:not(:disabled) {
-      box-shadow: 0 8px 28px rgba(40,200,80,0.45), 0 1px 3px rgba(0,0,0,0.3);
     }
     .hint {
       text-align: center;
@@ -403,12 +399,12 @@
 
     // 优化版跳动选号：预缓存球映射，requestAnimationFrame 驱动
     function jumpSelect(containerId, target, onDone) {
-      const totalSteps = 22;
+      const totalSteps = 18;
       let step = 0;
       let currentBall = null;
       const ballMap = getBallMap(containerId);
       let avail = Object.keys(ballMap).map(Number);
-      const delays = [10,10,10,10,10,10, 20,20,20,20,20, 30,30,30,30,30, 50,50,50,50, 70,70];
+      const delays = [10,10,10,10,10, 20,20,20,20, 30,30,30,30, 50,50,50, 70,70];
       let lastTime = 0;
       let delayIdx = 0;
       let rafId;
