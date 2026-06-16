@@ -417,7 +417,7 @@ function predictMatchLive(m, settledMatches) {
   // 计算经过/剩余时间
   const matchTs = parseMatchTime(m.time);
   const elapsed = Math.max(1, Math.floor((Date.now() - matchTs) / 60000));
-  const remaining = Math.max(0, 90 - elapsed);
+  const remaining = Math.max(0, 105 - elapsed);
 
   const hr = RANKINGS[m.homeName] || 99;
   const ar = RANKINGS[m.awayName] || 99;
@@ -429,26 +429,26 @@ function predictMatchLive(m, settledMatches) {
   // 领先2球+ 剩≤20分钟 → 守住
   if (Math.abs(goalDiff) >= 2 && remaining <= 20) {
     pick = leaderName + ' 胜';
-    reasonHead = '剩' + remaining + '分钟，领先' + Math.abs(goalDiff) + '球胜券在握';
+    reasonHead = '还剩' + remaining + '分钟，领先' + Math.abs(goalDiff) + '球胜券在握';
   }
   // 领先2球+ 剩>20分钟 → 再进1球
   else if (Math.abs(goalDiff) >= 2 && remaining > 20) {
     finalHome += (goalDiff > 0 ? 1 : 0);
     finalAway += (goalDiff < 0 ? 1 : 0);
     pick = leaderName + ' 胜';
-    reasonHead = '剩' + remaining + '分钟，领先方有望扩大比分';
+    reasonHead = '还剩' + remaining + '分钟，领先方有望扩大比分';
   }
   // 领先1球 剩≤15分钟 → 守住
   else if (Math.abs(goalDiff) === 1 && remaining <= 15) {
     pick = leaderName + ' 胜';
-    reasonHead = '剩' + remaining + '分钟，一球优势大概率守住';
+    reasonHead = '还剩' + remaining + '分钟，一球优势大概率守住';
   }
   // 领先1球 剩>15分钟 → 再进1球
   else if (Math.abs(goalDiff) === 1 && remaining > 15) {
     finalHome += 1;
     finalAway += (goalDiff < 0 ? 1 : 0);
     pick = leaderName + ' 胜';
-    reasonHead = '剩' + remaining + '分钟，领先方或再下一城';
+    reasonHead = '还剩' + remaining + '分钟，领先方或再下一城';
   }
   // 平局 剩≤15分钟
   else if (goalDiff === 0 && remaining <= 15) {
@@ -456,10 +456,10 @@ function predictMatchLive(m, settledMatches) {
       finalHome += (strongerName === m.homeName ? 1 : 0);
       finalAway += (strongerName === m.awayName ? 1 : 0);
       pick = strongerName + ' 胜';
-      reasonHead = '剩' + remaining + '分钟，' + strongerName + '实力更强有望绝杀';
+      reasonHead = '还剩' + remaining + '分钟，' + strongerName + '实力更强有望绝杀';
     } else {
       pick = '平局';
-      reasonHead = '剩' + remaining + '分钟，难分伯仲';
+      reasonHead = '还剩' + remaining + '分钟，难分伯仲';
     }
   }
   // 平局 剩>15分钟
@@ -468,15 +468,18 @@ function predictMatchLive(m, settledMatches) {
       finalHome += (strongerName === m.homeName ? 1 : 0);
       finalAway += (strongerName === m.awayName ? 1 : 0);
       pick = strongerName + ' 胜';
-      reasonHead = '剩' + remaining + '分钟，' + strongerName + '实力占优有望打破僵局';
+      reasonHead = '还剩' + remaining + '分钟，' + strongerName + '实力占优有望打破僵局';
     } else {
       finalHome += 1; finalAway += 1;
       pick = '平局';
-      reasonHead = '剩' + remaining + '分钟，双方或再各入一球';
+      reasonHead = '还剩' + remaining + '分钟，双方或再各入一球';
     }
   }
 
   var reason = '当前' + m.liveScore + '，' + reasonHead + '。';
+  if (elapsed > 90) {
+    reason = reason.replace('还剩' + remaining + '分钟', '加时/补时15分钟，还剩' + remaining + '分钟');
+  }
   return { pick: pick, prediction: finalHome + ' : ' + finalAway, reason: reason };
 }
 
@@ -606,10 +609,13 @@ document.addEventListener('DOMContentLoaded', () => {
     syncTrackHeight();
   } else {
     populatePredictions();
+    doRefresh();
   }
 
-  doRefresh();
   setInterval(updateLiveTimers, 1000);
+
+  // 有缓存时跳过全量刷新，直接启动轮询（如有进行中比赛）
+  if (cached) scheduleLivePoll();
 });
 
 let livePollTimer = null;
@@ -644,10 +650,7 @@ function updateLiveTimers() {
     const matchTs = parseInt(el.dataset.matchTs);
     if (!matchTs) return;
     const elapsed = Math.max(0, Math.floor((now - matchTs) / 1000));
-    const h = Math.floor(elapsed / 3600);
-    const m = Math.floor((elapsed % 3600) / 60);
-    const s = elapsed % 60;
-    el.textContent = h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+    el.textContent = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2,'0')}`;
     // 超过 150 分钟阈值，触发标签切换
     if (elapsed >= 150 * 60) needRerender = true;
   });
@@ -657,6 +660,11 @@ function updateLiveTimers() {
 function formatDuration(seconds) {
   const m = Math.round(seconds / 60);
   return m + '分钟';
+}
+
+function formatElapsed(matchTs) {
+  const elapsed = Math.max(0, Math.floor((Date.now() - matchTs) / 1000));
+  return `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2,'0')}`;
 }
 
 function renderPanels() {
@@ -673,9 +681,9 @@ function renderPanels() {
     const statusHtml = isEndedLive
       ? `<span class="match-status ended">⌛️比赛时长 ${formatDuration(m.duration || 0)}</span>`
       : statusClass === 'live'
-        ? `<span class="match-status ${statusClass}">比赛中 <span class="live-hourglass">⌛️</span><span class="live-timer" data-match-ts="${parseMatchTime(m.time)}">0:00</span></span>`
+        ? `<span class="match-status ${statusClass}">比赛中 <span class="live-hourglass">⌛️</span><span class="live-timer" data-match-ts="${parseMatchTime(m.time)}">${formatElapsed(parseMatchTime(m.time))}</span></span>`
         : m.liveScore
-          ? `<span class="match-status ended">⌛️比赛时长 ${formatDuration(m.duration || 9000)}</span>`
+          ? `<span class="match-status live">比赛中 <span class="live-hourglass">⌛️</span><span class="live-timer" data-match-ts="${parseMatchTime(m.time)}">${formatElapsed(parseMatchTime(m.time))}</span></span>`
           : `<span class="match-status ${statusClass}">${statusText}</span>`;
     return `
     <div class="match-card">
