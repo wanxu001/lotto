@@ -1250,8 +1250,9 @@ async function doRefresh() {
 
 function scheduleLivePoll() {
   clearTimeout(livePollTimer);
-  var hasLive = upcoming.some(function(m) { return m.liveScore && !m.isEnded; });
-  if (hasLive) {
+  // 只要有未结束的比赛就持续轮询，不只在 ESPN 确认 live 后才启动
+  var hasUpcoming = upcoming.some(function(m) { return !m.isEnded; });
+  if (hasUpcoming) {
     livePollTimer = setTimeout(pollLiveScores, 60000);
   }
 }
@@ -1316,7 +1317,7 @@ async function pollLiveScores() {
         m.isEnded = true;
         changed = true;
       } else if (e.live) {
-        if (e.espnClockMin != null) { m._espnClockMin = e.espnClockMin; m._clockFetchedAt = Date.now(); }
+        if (e.espnClockMin != null) { m._espnClockMin = e.espnClockMin; m._clockFetchedAt = Date.now(); changed = true; }
         if (m.liveScore !== e.score) {
           m.liveScore = e.score;
           changed = true;
@@ -1328,9 +1329,10 @@ async function pollLiveScores() {
       var nd = new Date();
       lastUpdate = (nd.getMonth()+1) + '月' + nd.getDate() + '日 ' + String(nd.getHours()).padStart(2,'0') + ':' + String(nd.getMinutes()).padStart(2,'0');
       $disc.innerHTML = '数据更新于 ' + lastUpdate + '<br>AI 分析基于球队排名/本届战绩/出线形势/历史交锋';
-      renderPanels();
-      syncTrackHeight();
     }
+    // 始终刷新面板，让比赛分钟数跟随本地时间更新
+    renderPanels();
+    syncTrackHeight();
   } catch(e) {}
 
   scheduleLivePoll();
