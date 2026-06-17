@@ -660,6 +660,11 @@ function populatePredictions() {
     } else {
       p = predictMatch(m.homeName, m.awayName, settled, m.league);
     }
+    // 统一转为主队视角：显示主队名+胜负
+    if (p.pick !== '平局') {
+      var pWinner = p.pick.split(' ')[0];
+      p.pick = pWinner === m.homeName ? (m.homeName + ' 胜') : (m.homeName + ' 负');
+    }
     m.pick = p.pick;
     m.prediction = p.prediction;
     m.reason = p.reason;
@@ -883,6 +888,17 @@ function getLiveReason(originalReason, minute) {
   return originalReason.replace(/(?:还剩\d+分钟|加时\/补时\d+分钟)/, timeStr);
 }
 
+function pickHtml(m) {
+  if (!m.pick || m.pick === '平局') return '';
+  var idx = m.pick.lastIndexOf(' ');
+  if (idx === -1) return m.pick;
+  var name = m.pick.substring(0, idx);
+  var result = m.pick.substring(idx + 1);
+  if (result === '胜') return name + ' <span style="color:#00b894;font-weight:600">胜</span>';
+  if (result === '负') return name + ' <span style="color:#e17055;font-weight:600">负</span>';
+  return m.pick;
+}
+
 function renderPanels() {
   if (disclaimerShown) $disc.innerHTML = '数据更新于 ' + lastUpdate + '<br>AI 分析基于球队排名/本届战绩/出线形势/历史交锋';
   $updateTime.textContent = lastUpdate + ' 更新';
@@ -917,7 +933,7 @@ function renderPanels() {
       </div>
       <div class="ai-pick">
         <div class="ai-label">${aiLabelText(m)}</div>
-        <div class="ai-result">${m.pick ? (FLAG_MAP[m.pick.split(' ')[0]] || '') + ' ' + m.pick + '·比分 ' + (m.prediction || '—') : '⚽ 待分析 · ' + (m.prediction || '—')}</div>
+        <div class="ai-result">${m.pick === '平局' ? '平局 · 比分 ' + (m.prediction || '—') : m.pick ? (m.home || '') + ' ' + pickHtml(m) + ' · 比分 ' + (m.prediction || '—') : m.prediction ? '⚽ 比分 ' + m.prediction : '⚽ 待分析'}</div>
         <div class="ai-reason"${m.liveScore ? ' data-mid="' + m.id + '" data-original-reason="' + (m.reason || '').replace(/"/g, '&quot;') + '"' : ''}>${m.liveScore ? getLiveReason(m.reason || '', getMatchMinute(m)) : (m.reason || '')}</div>
       </div>
     </div>
