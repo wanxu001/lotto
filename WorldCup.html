@@ -76,7 +76,6 @@
     .match-status.live { background: #e53935; color: #fff; }
     .match-status.ended { background: rgba(255,255,255,0.08); color: #666; }
     .live-hourglass { display: inline-block; animation: spin 1.5s linear infinite; }
-    @keyframes spin { 100%{transform:rotate(360deg)} }
     .match-league {
       background: rgba(255,215,0,0.15); color: #ffd700; padding: 2px 4px;
       border-radius: 4px; font-size: 0.7rem; margin-left: auto;
@@ -87,11 +86,6 @@
     }
     .team { text-align: center; }
     .team-flag { font-size: 2rem; }
-    .flag-badge { display: inline-flex; align-items: center; justify-content: center; width: 2.4rem; height: 1.6rem; border-radius: 4px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.5px; color: #fff; line-height: 1; }
-    .flag-eng { background: #CE1124; }
-    .flag-sco { background: #005EB8; }
-    .flag-wal { background: #00AD36; }
-    .team-flag .flag-badge { vertical-align: middle; }
     .team-name { font-size: 0.9rem; font-weight: bold; margin-top: 2px; }
     .vs { color: #444; font-size: 0.85rem; font-weight: bold; }
     .score-display { font-size: 1.3rem; font-weight: bold; color: #ffd700; }
@@ -103,6 +97,7 @@
     }
     .ai-label { color: #ffd700; font-size: 0.72rem; margin-bottom: 4px; }
     .ai-result { font-size: 1.1rem; font-weight: bold; color: #fff; }
+    .ai-tag { display: inline-block; font-size: 0.68rem; font-weight: 500; color: #ffd700; background: rgba(255,215,0,0.1); border-radius: 4px; padding: 2px 4px; margin-bottom: 6px; }
     .ai-reason { color: #aaa; font-size: 0.72rem; margin-top: 4px; line-height: 1.5; }
 
     .refresh-btn {
@@ -225,13 +220,29 @@ const RANKINGS = {
   '厄瓜多尔':23,'奥地利':24,'韩国':25,'尼日利亚':26,'澳大利亚':27,'阿尔及利亚':28,
   '埃及':29,'加拿大':30,'挪威':31,'乌克兰':32,'科特迪瓦':33,'巴拿马':34,'俄罗斯':35,
   '波兰':36,'威尔士':37,'瑞典':38,'匈牙利':39,'捷克':40,'巴拉圭':41,'苏格兰':42,
-  '塞尔维亚':43,'喀麦隆':44,'突尼斯':45,'刚果民主共和国':46,'斯洛伐克':47,'希腊':48,
+  '塞尔维亚':43,'喀麦隆':44,'突尼斯':45,'民主刚果':46,'斯洛伐克':47,'希腊':48,
   '委内瑞拉':49,'乌兹别克斯坦':50,
   '卡塔尔':56,'南非':60,'沙特':61,'波黑':64,'佛得角':67,'加纳':73,
   '库拉索':82,'海地':83,'新西兰':85,
   '伊拉克':57,'约旦':63,
 };
 
+/*
+ * AI 赛前预测核心函数。
+ * 输入主客队名、已完赛数据、小组名，返回 { pick, prediction, reason }。
+ *
+ * 预测流程：
+ *   1. 基础排名 → 有效排名（ehr / ear，值越小越强）
+ *   2. 本届战绩修正（连胜/连败加权）、历史交锋修正、出线形势修正
+ *   3. 近期状态作为因子补充（优先 dynamicRecent，fallback 到静态 RECENT）
+ *   4. 按有效排名差值（diff = |ehr - ear|）分档生成比分和胜负判断
+ *   5. 过滤与预测矛盾的因子（如交锋占优方 ≠ 预测胜方）
+ *   6. 组装理由文本：排名信息 + 最多 2 条因子 + 综合判断结语
+ *
+ * 有效排名修正规则（负数=增强实力）：
+ *   单场胜 -8，平 -2，负 +5；连胜 ≥2 追加 -(n×3)，连败 ≥2 追加 +(n×3)
+ *   历史交锋占优方 -5，劣势方 +3；小组 0 分 -8，1 分 -4
+ */
 function predictMatch(homeName, awayName, settledMatches, league) {
   const hr = RANKINGS[homeName] || 99;
   const ar = RANKINGS[awayName] || 99;
@@ -240,10 +251,18 @@ function predictMatch(homeName, awayName, settledMatches, league) {
   let ehr = hr, ear = ar;
   let factors = [];
 
-  // 1. 本届多轮战绩修正（每队汇总为一条描述）
+  /*
+   * 1. 本届多轮战绩修正。
+   *    从 settledMatches 中遍历每队的比赛结果，记录 W/D/L 序列。
+   *    单场修正：胜 -8，平 -2，负 +5（值越小越强）。
+   *    连续修正：连胜/连败 ≥2 时，额外加权 ±(n×3)（见下方 streakVal）。
+   *    汇总结果通过 teamLabel 生成中文描述因子（如"德国2连胜势头正盛"）。
+   */
   if (settledMatches) {
     let homeRes = [], awayRes = [];
-    for (const m of settledMatches) {
+    // 按时间升序排列，确保 results 数组尾部为最近比赛，streakVal/teamLabel 分析正确方向
+    const sortedMatches = [...settledMatches].sort((a, b) => (a.matchTs || 0) - (b.matchTs || 0));
+    for (const m of sortedMatches) {
       if (m.homeName === homeName) {
         const [hs, as] = m.score.split(':').map(Number);
         homeRes.push(hs > as ? 'W' : (hs === as ? 'D' : 'L'));
@@ -278,10 +297,9 @@ function predictMatch(homeName, awayName, settledMatches, league) {
         if (last === 'W') return name + n + '连胜势头正盛';
         if (last === 'L') return name + n + '连败状态低迷';
       }
-      const w = results.filter(function(r) { return r === 'W'; }).length;
-      const d = results.filter(function(r) { return r === 'D'; }).length;
-      const l = results.filter(function(r) { return r === 'L'; }).length;
-      if (l === 0 && d === 0) return name + w + '场全胜气势如虹';
+      var cnts = results.reduce(function(a, r) { a[r] = (a[r]||0) + 1; return a; }, {});
+      var w = cnts.W || 0, d = cnts.D || 0, l = cnts.L || 0;
+      if (l === 0 && d === 0 && w >= 3) return name + w + '场全胜气势如虹';
       if (w === 0 && d === 0) return name + l + '场全败急需反弹';
       let label = name;
       if (w > 0) label += w + '胜';
@@ -310,19 +328,27 @@ function predictMatch(homeName, awayName, settledMatches, league) {
     if (aLabel) factors.push(aLabel);
   }
 
-  // 2. 历史交锋修正
+  /*
+   * 2. 历史交锋修正 —— 从 H2H 字典解析交锋记录，给占优方/劣势方调整有效排名。
+   *    占优因子（h2hFactor）不立即 push 到 factors，而是延后到战绩因子之后，
+   *    确保理由展示时"交锋占优"不会挤掉更重要的战绩/状态因子。
+   */
+  var h2hFactor = null;
   const h2h = H2H[homeName + '|' + awayName];
   if (h2h && !h2h.includes('首次')) {
-    const homeWins = (h2h.match(new RegExp(homeName + '(\\d+)胜')) || [])[1];
-    const awayWins = (h2h.match(new RegExp(awayName + '(\\d+)胜')) || [])[1];
+    // 队名可能包含正则元字符，转义后再拼入 RegExp
+    const escH = homeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escA = awayName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const homeWins = (h2h.match(new RegExp(escH + '(\\d+)胜')) || [])[1];
+    const awayWins = (h2h.match(new RegExp(escA + '(\\d+)胜')) || [])[1];
     if (homeWins || awayWins) {
       const hw = parseInt(homeWins) || 0, aw = parseInt(awayWins) || 0;
-      if (hw > aw) { ehr -= 5; ear += 3; factors.push('交锋' + homeName + '占优'); }
-      else if (aw > hw) { ear -= 5; ehr += 3; factors.push('交锋' + awayName + '占优'); }
+      if (hw > aw) { ehr -= 5; ear += 3; h2hFactor = homeName + '占优'; }
+      else if (aw > hw) { ear -= 5; ehr += 3; h2hFactor = awayName + '占优'; }
     } else if (h2h.includes(homeName + '全胜') || h2h.includes(homeName + '占优')) {
-      ehr -= 5; ear += 3; factors.push('交锋' + homeName + '占优');
+      ehr -= 5; ear += 3; h2hFactor = homeName + '占优';
     } else if (h2h.includes(awayName + '全胜') || h2h.includes(awayName + '占优')) {
-      ear -= 5; ehr += 3; factors.push('交锋' + awayName + '占优');
+      ear -= 5; ehr += 3; h2hFactor = awayName + '占优';
     }
   }
 
@@ -341,25 +367,32 @@ function predictMatch(homeName, awayName, settledMatches, league) {
   }
 
   // 4. 近期状态补充（无本届战绩时用静态 RECENT）
-  if (factors.length < 2) {
-    function recentFactor(name) {
-      var r = RECENT[name];
-      if (!r) return null;
-      var brief = r.split('，')[0].replace(/（[^）]*）/g, '');
-      // 去掉冗余前缀，精简为关键数字
-      brief = brief.replace(/^近\d+场/, '').replace(/^各项赛事/, '').replace(/^热身赛/, '');
-      // "六连胜+5场零封" → "六连胜"
-      brief = brief.replace(/\+.*$/, '');
-      if (!brief) return null;
-      // 限制长度
-      if (brief.length > 8) brief = brief.substring(0, 8);
-      return name + brief;
-    }
-    var hRec = recentFactor(homeName);
-    var aRec = recentFactor(awayName);
-    if (hRec && !factors.some(function(f) { return f.indexOf(homeName) === 0; })) factors.push(hRec);
-    if (aRec && !factors.some(function(f) { return f.indexOf(awayName) === 0; })) factors.push(aRec);
+  function recentFactor(name) {
+    var r = dynamicRecent[name] || RECENT[name];
+    if (!r) return null;
+    var brief = r.split('，')[0].replace(/（[^）]*）/g, '');
+    // 去掉冗余前缀，精简为关键数字
+    brief = brief.replace(/^近\d+场/, '').replace(/^各项赛事/, '').replace(/^热身赛/, '').replace(/^世预赛/, '').replace(/^预选赛/, '');
+    // "六连胜+5场零封" → "六连胜"
+    brief = brief.replace(/\+.*$/, '');
+    if (!brief) return null;
+    return name + brief;
   }
+  var hRec = recentFactor(homeName);
+  var aRec = recentFactor(awayName);
+  if (factors.length < 2) {
+    if (h2hFactor) {
+      // 有交锋占优时只补占优方战绩，避免占优因子被挤出前2
+      var domRec = h2hFactor.indexOf(homeName) === 0 ? hRec : aRec;
+      if (domRec) factors.push(domRec);
+    } else {
+      if (hRec && !factors.some(function(f) { return f.indexOf(homeName) === 0; })) factors.push(hRec);
+      if (aRec && !factors.some(function(f) { return f.indexOf(awayName) === 0; })) factors.push(aRec);
+    }
+  }
+
+  // 占优因子排在战绩之后
+  if (h2hFactor) factors.push(h2hFactor);
 
   // 用有效排名计算
   const diff = Math.abs(ehr - ear);
@@ -401,34 +434,80 @@ function predictMatch(homeName, awayName, settledMatches, league) {
   }
 
   // 过滤与预测矛盾的因子（如交锋占优方 ≠ 预测胜方）
+  /*
+   * 预测已基于有效排名差值锁定胜方，此时若 reasons 中展示"对手占优"
+   * 会造成逻辑矛盾。因此过滤掉所有含"占优"且属于对手方的因子，
+   * 并在过滤后从胜方近期战绩中补回一条因子，避免理由过短。
+   */
   if (pick !== '平局') {
     var winner = pick.split(' ')[0];
     factors = factors.filter(function(f) {
-      if (f.indexOf('交锋') === 0 && f.indexOf('占优') >= 0 && f.indexOf(winner) < 0) return false;
+      if (f.indexOf('占优') >= 0 && f.indexOf(winner) < 0) return false;
+      // 过滤预测胜方的负面近期战绩（如"法国1-2遭科特迪瓦逆转" / "澳大利亚首轮0 : 2负土耳其"）
+      if (f.indexOf(winner) === 0) {
+        var rest = f.substring(winner.length);
+        // 去掉动态近期战绩的轮次前缀（"首轮" / "第2轮" 等），露出比分
+        var clean = rest.replace(/^(首轮|第\d+轮)/, '');
+        var sm = clean.match(/^(\d+)\s*[-:]\s*(\d+)/);
+        if (sm && parseInt(sm[1]) < parseInt(sm[2])) return false; // 比分显示己方落败
+        if (/遭|惨败|不敌|失利/.test(rest)) return false; // 负面关键词
+      }
       return true;
     });
+    // 占优因子被过滤时（历史交锋有利方≠预测胜方），补回胜方战绩
+    if (h2hFactor && h2hFactor.indexOf(winner) < 0 && factors.length < 2) {
+      var winRec = winner === homeName ? hRec : aRec;
+      if (winRec && !factors.some(function(f) { return f.indexOf(winner) === 0; })) {
+        // 不补回负面战绩（与上方负面过滤规则一致）
+        var wRest = winRec.substring(winner.length);
+        var wClean = wRest.replace(/^(首轮|第\d+轮)/, '');
+        var wSm = wClean.match(/^(\d+)\s*[-:]\s*(\d+)/);
+        if (!(wSm && parseInt(wSm[1]) < parseInt(wSm[2])) && !/遭|惨败|不敌|失利/.test(wRest)) {
+          factors.unshift(winRec);
+        }
+      }
+    }
   }
 
+  // 排名前缀
+  var rankStr = '世界第' + hr + ' vs 第' + ar;
+
   // 精简理由
-  let reason;
-  function rankStr(r) { return r <= 50 ? r : (r === 99 ? '百名外' : r); }
-  const rankLabel = '世界第' + rankStr(hr) + ' vs 第' + rankStr(ar);
+  let reason, verdict;
+  if (diff >= 60) verdict = '稳操胜券';
+  else if (diff >= 40) verdict = '明显占优';
+  else if (diff >= 30) verdict = '优势不小';
+  else if (diff >= 10) verdict = '胜算较高';
+  else if (diff >= 3) verdict = '略胜一筹';
+  else verdict = '势均力敌';
+
+  if (pick !== '平局') verdict = higher + verdict;
+
+  /*
+   * 理由展示策略：取前 2 条因子 + 排名信息。
+   * 若 h2hFactor 存在但在尾部（排第 3+ 位），强制提升到第 2 位替换掉第 2 条因子，
+   * 确保"交锋占优"这类强信号始终可见。
+   * 若没有"占优"类因子，额外追加综合判断结语（十拿九稳/略占上风 等）。
+   */
   if (factors.length > 0) {
-    reason = rankLabel + '，' + factors.slice(0, 2).join('，');
-    if (diff >= 60) reason += '，稳操胜券';
-    else if (diff >= 40) reason += '，明显占优';
-    else if (diff >= 30) reason += '，优势不小';
-    else if (diff >= 10) reason += '，胜算较高';
-    else if (diff >= 3) reason += '，略胜一筹';
-    else reason += '，势均力敌';
+    var shown = factors.slice(0, 2);
+    if (h2hFactor && shown.indexOf(h2hFactor) === -1 && factors.indexOf(h2hFactor) !== -1) {
+      shown = shown.slice(0, 1).concat([h2hFactor]);
+    }
+    reason = rankStr + '：' + shown.join('，');
+    var hasDom = shown.some(function(f) { return f.indexOf('占优') >= 0; });
+    if (!hasDom) {
+      var softV;
+      if (diff >= 70) softV = '十拿九稳';
+      else if (diff > 50) softV = '胜算极高';
+      else if (diff > 30) softV = '更胜一筹';
+      else if (diff > 10) softV = '优势明显';
+      else if (diff > 5) softV = '略占上风';
+      else softV = '势均力敌';
+      reason += '，综合判断，' + (pick !== '平局' ? higher + softV : '可能' + softV);
+    }
   } else {
-    reason = rankLabel;
-    if (diff >= 60) reason += '，稳操胜券';
-    else if (diff >= 40) reason += '，明显占优';
-    else if (diff >= 30) reason += '，优势不小';
-    else if (diff >= 10) reason += '，胜算较高';
-    else if (diff >= 3) reason += '，略胜一筹';
-    else reason += '，势均力敌';
+    reason = rankStr + '：' + verdict;
   }
 
   return { pick, prediction, reason };
@@ -543,123 +622,18 @@ let dynamicRecent = {};
 // 小组积分榜（从 ESPN standings API 动态拉取）
 let groupStandings = {};
 
-function predictMatchLive(m, settledMatches) {
-  const parts = m.liveScore.split(' : ');
-  const hScore = parseInt(parts[0]), aScore = parseInt(parts[1]);
-  const goalDiff = hScore - aScore;
-
-  const elapsed = Math.max(1, getMatchMinute(m));
-  const remaining = Math.max(0, 90 - elapsed);
-
-  const hr = RANKINGS[m.homeName] || 99;
-  const ar = RANKINGS[m.awayName] || 99;
-  const rankGap = Math.abs(hr - ar);
-  const leaderName = goalDiff > 0 ? m.homeName : (goalDiff < 0 ? m.awayName : null);
-  const strongerName = hr < ar ? m.homeName : (ar < hr ? m.awayName : null);
-
-  var finalHome = hScore, finalAway = aScore, pick, reasonHead;
-
-  // === 补时阶段独立策略 ===
-  if (elapsed > 90) {
-    const extraElapsed = elapsed - 90;
-    if (Math.abs(goalDiff) >= 2) {
-      pick = leaderName + ' 胜';
-      reasonHead = '加时/补时' + extraElapsed + '分钟，领先' + Math.abs(goalDiff) + '球胜券在握';
-    } else if (Math.abs(goalDiff) === 1) {
-      if (rankGap >= 30 && strongerName === leaderName) {
-        pick = leaderName + ' 胜';
-        reasonHead = '加时/补时' + extraElapsed + '分钟，' + leaderName + '死守一球优势';
-      } else {
-        finalHome += (goalDiff < 0 ? 1 : 0);
-        finalAway += (goalDiff > 0 ? 1 : 0);
-        pick = '平局';
-        reasonHead = '加时/补时' + extraElapsed + '分钟，落后方孤注一掷有望扳平';
-      }
-    } else {
-      if (strongerName && rankGap >= 20) {
-        finalHome += (strongerName === m.homeName ? 1 : 0);
-        finalAway += (strongerName === m.awayName ? 1 : 0);
-        pick = strongerName + ' 胜';
-      } else {
-        if (strongerName) {
-          finalHome += (strongerName === m.homeName ? 1 : 0);
-          finalAway += (strongerName === m.awayName ? 1 : 0);
-          pick = strongerName + ' 胜';
-        } else {
-          finalHome += 1;
-          pick = m.homeName + ' 胜';
-        }
-      }
-      reasonHead = '加时/补时' + extraElapsed + '分钟，双方殊死一搏';
-    }
-    return { pick: pick, prediction: finalHome + ' : ' + finalAway, reason: '当前' + m.liveScore + '，' + reasonHead + '。' };
-  }
-
-  // === 常规时间：渐进阈值策略 ===
-  if (Math.abs(goalDiff) >= 2) {
-    if (remaining <= 15) {
-      pick = leaderName + ' 胜';
-      reasonHead = '还剩' + remaining + '分钟，领先' + Math.abs(goalDiff) + '球胜券在握';
-    } else {
-      finalHome += (goalDiff > 0 ? 1 : 0);
-      finalAway += (goalDiff < 0 ? 1 : 0);
-      pick = leaderName + ' 胜';
-      reasonHead = '还剩' + remaining + '分钟，领先方有望扩大比分';
-    }
-  } else if (Math.abs(goalDiff) === 1) {
-    // 领先1球：remaining/30 衰减 + 排名差修正
-    var scoreWeight = remaining / 30 + (leaderName === strongerName && rankGap >= 20 ? 0.3 : 0);
-    var willExpand = remaining >= 25 || (remaining > 8 && scoreWeight > 0.5);
-    if (willExpand) {
-      finalHome += (goalDiff > 0 ? 1 : 0);
-      finalAway += (goalDiff < 0 ? 1 : 0);
-      pick = leaderName + ' 胜';
-      reasonHead = '还剩' + remaining + '分钟，领先方或再下一城';
-    } else {
-      pick = leaderName + ' 胜';
-      reasonHead = '还剩' + remaining + '分钟，一球优势大概率守住';
-    }
-  } else {
-    // 平局：三阶段衰减
-    if (remaining <= 10) {
-      if (strongerName && rankGap >= 20) {
-        finalHome += (strongerName === m.homeName ? 1 : 0);
-        finalAway += (strongerName === m.awayName ? 1 : 0);
-        pick = strongerName + ' 胜';
-        reasonHead = '还剩' + remaining + '分钟，' + strongerName + '实力更强有望绝杀';
-      } else {
-        pick = '平局';
-        reasonHead = '还剩' + remaining + '分钟，难分伯仲';
-      }
-    } else if (remaining <= 25) {
-      if (strongerName && rankGap >= 10) {
-        finalHome += (strongerName === m.homeName ? 1 : 0);
-        finalAway += (strongerName === m.awayName ? 1 : 0);
-        pick = strongerName + ' 胜';
-        reasonHead = '还剩' + remaining + '分钟，' + strongerName + '实力占优有望打破僵局';
-      } else {
-        pick = '平局';
-        reasonHead = '还剩' + remaining + '分钟，难分伯仲';
-      }
-    } else {
-      finalHome += 1; finalAway += 1;
-      pick = '平局';
-      reasonHead = '还剩' + remaining + '分钟，双方或再各入一球';
-    }
-  }
-
-  return { pick: pick, prediction: finalHome + ' : ' + finalAway, reason: '当前' + m.liveScore + '，' + reasonHead + '。' };
-}
-
+/*
+ * 为所有未开赛比赛填充 AI 预测结果。
+ * 跳过已结束(isEnded)和进行中(liveScore)的场次（保持赛前锁定的预测不变，赛中不动态调整）。
+ * 对每场未开赛调用 predictMatch，结果统一转为主队视角（"主队名 胜/负"），
+ * 同时写入 predictionStore 缓存供后续复用。
+ */
 function populatePredictions() {
   for (const m of upcoming) {
     var p;
     if (m.isEnded) continue;  // 比赛结束，保持已生成的AI竞猜不变
-    if (m.liveScore) {
-      p = predictMatchLive(m, settled);
-    } else {
-      p = predictMatch(m.homeName, m.awayName, settled, m.league);
-    }
+    if (m.liveScore) continue;  // 比赛进行中，保持赛前预测不变
+    p = predictMatch(m.homeName, m.awayName, settled, m.league);
     // 统一转为主队视角：显示主队名+胜负
     if (p.pick !== '平局') {
       var pWinner = p.pick.split(' ')[0];
@@ -682,13 +656,6 @@ let $wrap, $track, $slider, $btn0, $btn1, $bar, $disc, $upcomingPanel, $settledP
 let clickTimer, scrollTimer, clicking = false;
 let sliderWidth, sliderLeft0, sliderLeft1;
 
-  // CSS flag badges for subdivision teams (ENG/SCO/WAL)
-  function flagHtml(flag) {
-    if (!flag) return '🚩';
-    const map = { ENG: 'eng', SCO: 'sco', WAL: 'wal' };
-    const cls = map[flag];
-    return cls ? '<span class="flag-badge flag-' + cls + '">' + flag + '</span>' : flag;
-  }
 
 function setSlider(p) {
   $slider.style.left = (sliderLeft0 + p * (sliderLeft1 - sliderLeft0)) + 'px';
@@ -791,7 +758,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // 检查 sessionStorage，有缓存则先用缓存渲染
-  var cached = sessionStorage.getItem('wc2026_cache_v2');
+  var cached = sessionStorage.getItem('wc2026_cache_v3');
   var cacheOK = false;
   if (cached) {
     try {
@@ -816,11 +783,11 @@ document.addEventListener('DOMContentLoaded', () => {
         clearTimeout(window._emergencyTimer);
       } else {
         // 缓存格式异常，清除后走正常刷新流程
-        sessionStorage.removeItem('wc2026_cache_v2');
+        sessionStorage.removeItem('wc2026_cache_v3');
       }
     } catch(e) {
       // JSON 解析失败，清除脏缓存
-      sessionStorage.removeItem('wc2026_cache_v2');
+      sessionStorage.removeItem('wc2026_cache_v3');
     }
   }
 
@@ -829,10 +796,11 @@ document.addEventListener('DOMContentLoaded', () => {
     doRefresh();
   }
 
-  if (cacheOK) scheduleLivePoll();
+  if (cacheOK) { pollLiveScores(); }
 });
 
 let livePollTimer = null;
+let minuteRefreshTimer = null;
 
 function getStatus(timeStr) {
   const ts = parseMatchTime(timeStr);
@@ -847,11 +815,22 @@ function parseMatchTime(timeStr) {
   return new Date(2026, m - 1, d, h, min, 0).getTime();
 }
 
+/*
+ * 推算比赛当前分钟数。
+ * 优先使用 ESPN 接口返回的精确分钟数（_espnClockMin），基于 fetch 时间戳递推。
+ * 若无 ESPN 数据，兜底按开球时间 + 自由流逝时间估算，中场休息（45~60分钟区间）返回 -1。
+ */
 function getMatchMinute(m) {
-  if (m._espnClockMin != null) return m._espnClockMin;
-  // 兜底：按预定时间推算
+  if (m._espnClockMin != null && m._clockFetchedAt) {
+    return m._espnClockMin + Math.floor((Date.now() - m._clockFetchedAt) / 60000);
+  }
+  // 兜底：按开球后的自由流逝时间推算，中场休息时段返回 -1
   const ts = parseMatchTime(m.time);
-  return Math.max(0, Math.floor((Date.now() - ts) / 60000));
+  const elapsed = Math.floor((Date.now() - ts) / 60000);
+  if (elapsed < 0) return 0;
+  if (elapsed <= 48) return elapsed;
+  if (elapsed <= 63) return -1;
+  return Math.min(105, elapsed - 15);
 }
 
 function getStatusFromTs(matchTs) {
@@ -867,25 +846,9 @@ function formatDuration(seconds) {
   return m + '分钟';
 }
 
-function aiLabelText(m) {
-  if (m.pick) return '🤖 AI 竞猜';
-  return 'AI 竞猜';
-}
-
-function formatElapsed(matchTs) {
-  const elapsed = Math.max(0, Math.floor((Date.now() - matchTs) / 1000));
-  return `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2,'0')}`;
-}
-
-function getLiveReason(originalReason, minute) {
-  const remaining = Math.max(0, 90 - minute);
-  let timeStr;
-  if (minute > 90) {
-    timeStr = '加时/补时' + (minute - 90) + '分钟';
-  } else {
-    timeStr = '还剩' + remaining + '分钟';
-  }
-  return originalReason.replace(/(?:还剩\d+分钟|加时\/补时\d+分钟)/, timeStr);
+function minuteText(m) {
+  const v = getMatchMinute(m);
+  return v === -1 ? '中场休息' : v + '分钟';
 }
 
 function pickHtml(m) {
@@ -903,19 +866,25 @@ function renderPanels() {
   if (disclaimerShown) $disc.innerHTML = '数据更新于 ' + lastUpdate + '<br>AI 分析基于球队排名/本届战绩/出线形势/历史交锋';
   $updateTime.textContent = lastUpdate + ' 更新';
 
-  $upcomingPanel.innerHTML = upcoming.map(m => {
+  upcoming.forEach(function(m) { m._status = getStatus(m.time); });
+  $upcomingPanel.innerHTML = upcoming.filter(function(m) {
+    const [sc] = m._status;
+    if (sc !== 'ended') return true;
+    return m.isEnded || m.liveScore;
+  }).map(function(m) {
     const isEndedLive = m.isEnded === true;
-    const [statusClass, statusText] = isEndedLive ? ['ended', ''] : getStatus(m.time);
+    const [statusClass, statusText] = isEndedLive ? ['ended', ''] : m._status;
     const showScore = isEndedLive ? (m.score || m.liveScore) : (m.liveScore || m.score);
     const liveScoreHtml = showScore
-      ? `<div class="score-display" style="margin-bottom:6px">${showScore}</div>`
+      ? `<div class="score-display">${showScore}</div>` +
+        (!isEndedLive && m.liveScore ? '<div style="font-size:10px;color:#888;margin-top:2px">实时比分</div>' : '')
       : '';
     const statusHtml = isEndedLive
       ? `<span class="match-status ended">⌛️比赛时长 ${formatDuration(m.duration || 0)}</span>`
       : statusClass === 'live'
-        ? `<span class="match-status ${statusClass}">⌛比赛中 ${getMatchMinute(m)}分钟</span>`
+        ? `<span class="match-status ${statusClass}">⌛比赛中 ${minuteText(m)}</span>`
         : m.liveScore
-          ? `<span class="match-status live">⌛比赛中 ${getMatchMinute(m)}分钟</span>`
+          ? `<span class="match-status live">⌛比赛中 ${minuteText(m)}</span>`
           : `<span class="match-status ${statusClass}">${statusText}</span>`;
     return `
     <div class="match-card">
@@ -925,16 +894,16 @@ function renderPanels() {
         <span class="match-league">${m.league}</span>
       </div>
       <div class="match-teams">
-        <div class="team"><div class="team-flag">${flagHtml(m.home)}</div><div class="team-name">${m.homeName}</div></div>
+        <div class="team"><div class="team-flag">${(m.home || '🚩')}</div><div class="team-name">${m.homeName}</div></div>
         ${showScore
           ? `<div style="text-align:center">${liveScoreHtml}</div>`
           : '<div class="vs">VS</div>'}
-        <div class="team"><div class="team-flag">${flagHtml(m.away)}</div><div class="team-name">${m.awayName}</div></div>
+        <div class="team"><div class="team-flag">${(m.away || '🚩')}</div><div class="team-name">${m.awayName}</div></div>
       </div>
       <div class="ai-pick">
-        <div class="ai-label">${aiLabelText(m)}</div>
-        <div class="ai-result">${m.pick === '平局' ? '平局 · 比分 ' + (m.prediction || '—') : m.pick ? (m.home || '') + ' ' + pickHtml(m) + ' · 比分 ' + (m.prediction || '—') : m.prediction ? '⚽ 比分 ' + m.prediction : '⚽ 待分析'}</div>
-        <div class="ai-reason"${m.liveScore ? ' data-mid="' + m.id + '" data-original-reason="' + (m.reason || '').replace(/"/g, '&quot;') + '"' : ''}>${m.liveScore ? getLiveReason(m.reason || '', getMatchMinute(m)) : (m.reason || '')}</div>
+        ${(m.pick || m.prediction) ? '<span class="ai-tag">🤖 AI 赛前竞猜</span>' : ''}
+        <div class="ai-result">${m.pick === '平局' ? '平局 · ' + (m.prediction || '—') : m.pick ? (m.home || '') + ' ' + pickHtml(m) + ' · ' + (m.prediction || '—') : m.prediction ? '⚽ ' + m.prediction : '⚽ 待分析'}</div>
+        <div class="ai-reason">${m.reason || ''}</div>
       </div>
     </div>
   `}).join('');
@@ -951,12 +920,12 @@ function renderPanels() {
         '<span class="match-league">' + m.league + '</span>' +
       '</div>' +
       '<div class="match-teams">' +
-        '<div class="team"><div class="team-flag">' + flagHtml(m.home) + '</div><div class="team-name">' + m.homeName + '</div></div>' +
+        '<div class="team"><div class="team-flag">' + (m.home || '🚩') + '</div><div class="team-name">' + m.homeName + '</div></div>' +
         '<div style="text-align:center">' +
           '<div class="score-display">' + m.score + '</div>' +
           '<div style="font-size:10px;color:#888;margin-top:2px">AI竞猜 ' + prediction + '</div>' +
         '</div>' +
-        '<div class="team"><div class="team-flag">' + flagHtml(m.away) + '</div><div class="team-name">' + m.awayName + '</div></div>' +
+        '<div class="team"><div class="team-flag">' + (m.away || '🚩') + '</div><div class="team-name">' + m.awayName + '</div></div>' +
       '</div>' +
     '</div>';
   }).join('') + '<div style="text-align:center;color:#444;font-size:0.7rem;padding:10px 0 20px">没有更多了~</div>';
@@ -994,49 +963,42 @@ async function fetchStandings() {
   } catch(e) { return null; }
 }
 
-// 从已完赛比赛构建动态近期战绩
+/*
+ * 从已完赛比赛构建动态近期战绩。
+ * 每支球队以最新一场结果生成描述字符串，格式如"首轮2:1胜西班牙"。
+ * 用于 predictMatch 的 recentFactor 优先替代静态 RECENT 数据，确保战绩反映最新赛况。
+ * 返回 { 球队名: "战绩描述" }。
+ */
 function buildDynamicRecent(settledMatches) {
   const recent = {};
-  settledMatches.forEach(function(m) {
+  const roundMap = {};  // 每队出场次数计数，用于标记轮次
+  // 按时间升序排列：轮次标签正确（首轮→第N轮），且最后写入的为最新比赛
+  const sorted = [...settledMatches].sort((a, b) => (a.matchTs || 0) - (b.matchTs || 0));
+  sorted.forEach(function(m) {
     const parts = m.score.split(' : ');
     const hScore = parseInt(parts[0]), aScore = parseInt(parts[1]);
-    const hDesc = hScore > aScore ? '胜' : (hScore === aScore ? '平' : '负');
-    const aDesc = aScore > hScore ? '胜' : (aScore === hScore ? '平' : '负');
-    recent[m.homeName] = '首轮' + m.score + (hScore > aScore ? '胜' : (hScore === aScore ? '平' : '负')) + m.awayName;
-    recent[m.awayName] = '首轮' + aScore + ':' + hScore + (aScore > hScore ? '胜' : (aScore === hScore ? '平' : '负')) + m.homeName;
+    const hR = hScore > aScore ? '胜' : (hScore === aScore ? '平' : '负');
+    const aR = aScore > hScore ? '胜' : (aScore === hScore ? '平' : '负');
+    roundMap[m.homeName] = (roundMap[m.homeName] || 0) + 1;
+    roundMap[m.awayName] = (roundMap[m.awayName] || 0) + 1;
+    var hRound = roundMap[m.homeName] === 1 ? '首轮' : '第' + roundMap[m.homeName] + '轮';
+    var aRound = roundMap[m.awayName] === 1 ? '首轮' : '第' + roundMap[m.awayName] + '轮';
+    recent[m.homeName] = hRound + m.score + hR + m.awayName;
+    recent[m.awayName] = aRound + aScore + ' : ' + hScore + aR + m.homeName;
   });
   return recent;
 }
 
-// 基于小组积分榜生成出线形势分析
-function getStandingNote(homeName, awayName, league) {
-  if (!league || !groupStandings) return '';
-  const groupKey = league.replace('组', '');
-  const group = groupStandings[groupKey];
-  if (!group || group.length < 4) return '';
-  const homeRow = group.find(function(r) { return r.team === homeName; });
-  const awayRow = group.find(function(r) { return r.team === awayName; });
-  if (!homeRow || !awayRow) return '';
-
-  var notes = [];
-  // 已赛1场积0分 → 急需3分
-  if (homeRow.gp >= 1 && homeRow.pts === 0) {
-    notes.push(homeName + '积0分急需3分');
-  } else if (homeRow.gp >= 1 && homeRow.pts === 1) {
-    notes.push(homeName + '积1分需取胜掌握主动');
-  }
-  if (awayRow.gp >= 1 && awayRow.pts === 0) {
-    notes.push(awayName + '积0分急需3分');
-  } else if (awayRow.gp >= 1 && awayRow.pts === 1) {
-    notes.push(awayName + '积1分需取胜掌握主动');
-  }
-  // 已晋级/已淘汰
-  if (homeRow.note) notes.push(homeName + homeRow.note);
-  if (awayRow.note) notes.push(awayName + awayRow.note);
-
-  return notes.length > 0 ? '。出线形势：' + notes.join('；') : '';
-}
-
+/*
+ * 数据刷新主流程。
+ * 从 ESPN API 拉取最新赛果/赛程 → 提取已完赛(settled)和未开赛(upcoming) → 
+ * 拉取小组积分榜(fetchStandings) → 构建动态近期战绩(buildDynamicRecent) →
+ * 为已完赛补 AI 预测比分(predictMatch/predictionStore 缓存) →
+ * 为进行中比赛补赛前预测(predictionStore 赛前锁定) →
+ * 检测数据变更，变更时重新渲染并写 sessionStorage 缓存。
+ *
+ * 安全兜底：15 秒超时后强制恢复按钮，避免网络异常导致 UI 卡死。
+ */
 async function doRefresh() {
   const btn = document.getElementById('refreshBtn');
   const orig = btn.textContent;
@@ -1143,10 +1105,19 @@ async function doRefresh() {
           duration: durationSec
         });
       } else if (time) {
-        newUpcoming.push({
+        var liveEntry = {
           home: hFlag, homeName: hName, away: aFlag, awayName: aName,
           time, league: '', liveScore: isLive ? scoreStr : null
-        });
+        };
+        if (isLive) {
+          var lclock = status.displayClock || '';
+          var m2 = lclock.match(/^(\d+)'(\+(\d+)')?/);
+          if (m2) {
+            liveEntry._espnClockMin = parseInt(m2[1]) + (parseInt(m2[3]) || 0);
+            liveEntry._clockFetchedAt = Date.now();
+          }
+        }
+        newUpcoming.push(liveEntry);
       }
     });
 
@@ -1155,7 +1126,11 @@ async function doRefresh() {
 
     // 拉取小组积分榜 + 构建动态近期战绩
     var standingsPromise = fetchStandings();
-    dynamicRecent = buildDynamicRecent(newSettled);
+    var oldSettled = settled;
+    if (newSettled.length > 0) {
+      settled = newSettled;
+      dynamicRecent = buildDynamicRecent(newSettled);
+    }
 
     // 为 ESPN 数据补充 AI 竞猜比分和组名
     var aiMap = {}, lgMap = {};
@@ -1169,7 +1144,8 @@ async function doRefresh() {
         if (predictionStore[key]) {
           m.aiScore = predictionStore[key].prediction;
         } else {
-          var p = predictMatch(m.homeName, m.awayName, newSettled, m.league);
+          // 排除本场自身，避免数据泄露（赛后拿真实比分去"预测"自己）
+          var p = predictMatch(m.homeName, m.awayName, newSettled.filter(function(s) { return s !== m; }), m.league);
           predictionStore[key] = p;
           m.aiScore = p.prediction;
         }
@@ -1187,6 +1163,21 @@ async function doRefresh() {
       });
     }
     upcoming = newUpcoming.length > 0 ? newUpcoming : upcoming;
+    // 比赛进行中的直接取赛前竞猜缓存，不重新分析
+    if (newUpcoming.length > 0) {
+      for (var ui = 0; ui < upcoming.length; ui++) {
+        var um = upcoming[ui];
+        if (um.liveScore) {
+          var pk = um.homeName + '|' + um.awayName;
+          var cp = predictionStore[pk];
+          if (cp) {
+            um.pick = cp.pick;
+            um.prediction = cp.prediction;
+            um.reason = cp.reason;
+          }
+        }
+      }
+    }
     if (upcoming.length > 0) {
       populatePredictions();
       updatedUpcoming = true;
@@ -1195,23 +1186,23 @@ async function doRefresh() {
     if (newSettled.length > 0) {
       var changed = !initialized;
       if (!changed) {
-        changed = newSettled.length !== settled.length;
+        changed = newSettled.length !== oldSettled.length;
         if (!changed) {
           for (var i = 0; i < newSettled.length; i++) {
-            if (newSettled[i].homeName !== settled[i].homeName || newSettled[i].score !== settled[i].score) { changed = true; break; }
+            if (newSettled[i].homeName !== oldSettled[i].homeName || newSettled[i].score !== oldSettled[i].score) { changed = true; break; }
           }
         }
       }
       if (changed) {
-        settled = newSettled; var nd = new Date(); lastUpdate = (nd.getMonth()+1) + '月' + nd.getDate() + '日 ' + String(nd.getHours()).padStart(2,'0') + ':' + String(nd.getMinutes()).padStart(2,'0');
+        var nd = new Date(); lastUpdate = (nd.getMonth()+1) + '月' + nd.getDate() + '日 ' + String(nd.getHours()).padStart(2,'0') + ':' + String(nd.getMinutes()).padStart(2,'0');
         renderPanels();
         syncTrackHeight();
-        sessionStorage.setItem('wc2026_cache_v2', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
+        sessionStorage.setItem('wc2026_cache_v3', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
       } else if (updatedUpcoming) {
         lastUpdate = (new Date().getMonth()+1) + '月' + new Date().getDate() + '日 ' + String(new Date().getHours()).padStart(2,'0') + ':' + String(new Date().getMinutes()).padStart(2,'0');
         renderPanels();
         syncTrackHeight();
-        sessionStorage.setItem('wc2026_cache_v2', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
+        sessionStorage.setItem('wc2026_cache_v3', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
       }
       disclaimerShown = true;
       $disc.innerHTML = '数据更新于 ' + lastUpdate + '<br>AI 分析基于球队排名/本届战绩/出线形势/历史交锋';
@@ -1222,7 +1213,7 @@ async function doRefresh() {
       renderPanels();
       syncTrackHeight();
       initialized = true;
-      sessionStorage.setItem('wc2026_cache_v2', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
+      sessionStorage.setItem('wc2026_cache_v3', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
     }
 
     // 积分榜后台加载，不阻塞页面渲染
@@ -1232,7 +1223,7 @@ async function doRefresh() {
         populatePredictions();
         renderPanels();
         syncTrackHeight();
-        sessionStorage.setItem('wc2026_cache_v2', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
+        sessionStorage.setItem('wc2026_cache_v3', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
       }
     });
 
@@ -1251,7 +1242,7 @@ async function doRefresh() {
       renderPanels();
       syncTrackHeight();
       initialized = true;
-      sessionStorage.setItem('wc2026_cache_v2', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, standings: groupStandings, dRecent: dynamicRecent}));
+      sessionStorage.setItem('wc2026_cache_v3', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
     } else {
       $updateTime.textContent = lastUpdate + ' 更新';
       $disc.innerHTML = '数据更新于 ' + lastUpdate + '<br>AI 分析基于球队排名/本届战绩/出线形势/历史交锋';
@@ -1266,10 +1257,12 @@ async function doRefresh() {
 
 function scheduleLivePoll() {
   clearTimeout(livePollTimer);
+  clearInterval(minuteRefreshTimer);
   // 只要有未结束的比赛就持续轮询，不只在 ESPN 确认 live 后才启动
   var hasUpcoming = upcoming.some(function(m) { return !m.isEnded; });
   if (hasUpcoming) {
     livePollTimer = setTimeout(pollLiveScores, 60000);
+    minuteRefreshTimer = setInterval(function() { renderPanels(); syncTrackHeight(); }, 60000);
   }
 }
 
@@ -1321,7 +1314,7 @@ async function pollLiveScores() {
 
     for (var i = 0; i < upcoming.length; i++) {
       var m = upcoming[i];
-      if (!m.liveScore || m.isEnded) continue;
+      if (m.isEnded) continue;
       var key = m.homeName + '|' + m.awayName;
       var e = espnMap[key];
       if (!e) continue;
