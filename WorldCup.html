@@ -97,6 +97,7 @@
     }
     .ai-label { color: #ffd700; font-size: 0.72rem; margin-bottom: 4px; }
     .ai-result { font-size: 1.1rem; font-weight: bold; color: #fff; }
+    .ai-result.loading { color: #ffd700; }
     .ai-tag { display: inline-block; font-size: 0.68rem; font-weight: 500; color: #ffd700; background: rgba(255,215,0,0.1); border-radius: 4px; padding: 2px 4px; margin-bottom: 6px; }
     .ai-reason { color: #aaa; font-size: 0.72rem; margin-top: 4px; line-height: 1.5; }
 
@@ -929,7 +930,7 @@ function renderPanels() {
       </div>
       <div class="ai-pick">
         ${(m.pick || m.prediction) ? '<span class="ai-tag">🤖 AI 赛前竞猜</span>' : ''}
-        <div class="ai-result">${m.pick === '平局' ? '平局 · ' + (m.prediction || '—') : m.pick ? (m.home || '') + ' ' + pickHtml(m) + ' · ' + (m.prediction || '—') : m.prediction ? '⚽ ' + m.prediction : '⚽ 待分析'}</div>
+        <div class="ai-result${(m.pick || m.prediction) ? '' : ' loading'}">${m.pick === '平局' ? '平局 · ' + (m.prediction || '—') : m.pick ? (m.home || '') + ' ' + pickHtml(m) + ' · ' + (m.prediction || '—') : m.prediction ? '⚽ ' + m.prediction : '🤖 AI 竞猜中...'}</div>
         <div class="ai-reason">${m.reason || ''}</div>
       </div>
     </div>
@@ -1168,6 +1169,27 @@ async function doRefresh() {
         });
       }
 
+      // 保留已有的 AI 预测，避免刷新期间闪回"待分析"/"—"
+      if (settled.length > 0) {
+        var oldSMap = {};
+        settled.forEach(function(s) { oldSMap[s.homeName + '|' + s.awayName] = s; });
+        newSettled.forEach(function(m) {
+          var kk = m.homeName + '|' + m.awayName;
+          var old = oldSMap[kk];
+          if (old && old.aiScore !== undefined) m.aiScore = old.aiScore;
+        });
+      }
+      if (upcoming.length > 0) {
+        var oldUMap = {};
+        upcoming.forEach(function(u) { oldUMap[u.homeName + '|' + u.awayName] = u; });
+        newUpcoming.forEach(function(m) {
+          var kk = m.homeName + '|' + m.awayName;
+          var old = oldUMap[kk];
+          if (old) {
+            if (!m.isLive) { m.pick = old.pick; m.prediction = old.prediction; m.reason = old.reason; }
+          }
+        });
+      }
       // 本批处理完即渲染（首次加载时尽快出内容）
       newSettled.sort((a, b) => b.matchTs - a.matchTs);
       settled = newSettled;
