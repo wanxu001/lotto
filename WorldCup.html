@@ -200,12 +200,35 @@ const EN_TO_CN = {
   // 简称别名
   'Korea':'韩国','Czech':'捷克','USA':'美国','Curaçao':'库拉索','Cape Verde':'佛得角',
   'Ivory Coast':'科特迪瓦','South Korea':'韩国','Czechia':'捷克',
-  'Bosnia-Herzegovina':'波黑','Türkiye':'土耳其','South Africa':'南非',
+  'Bosnia-Herzegovina':'波黑','Türkiye':'土耳其',
   'Uzbekistan':'乌兹别克斯坦',
 };
 
 function cnName(en) {
   if (EN_TO_CN[en]) return EN_TO_CN[en];
+  // 淘汰赛阶段 ESPN 占位符翻译
+  let m = en.match(/^Group ([A-Z]) Winner$/i);
+  if (m) return m[1] + '组第一';
+  m = en.match(/^Group ([A-Z]) 2nd Place$/i);
+  if (m) return m[1] + '组第二';
+  m = en.match(/^Third Place Group (.+)$/i);
+  if (m) return m[1] + '组第三';
+  m = en.match(/^Round of (\d+) (\d+) (Winner|2nd Place)$/i);
+  if (m) {
+    const roundN = parseInt(m[1]), matchN = m[2], type = m[3].toLowerCase();
+    const suffix = type === 'winner' ? '胜者' : '第二';
+    let label;
+    if (roundN <= 2) label = '决赛';
+    else if (roundN <= 4) label = '半决赛';
+    else label = '1/' + (roundN / 2) + '决赛';
+    return label + '第' + matchN + '场' + suffix;
+  }
+  m = en.match(/^(Quarterfinal|Semifinal) (\d+) (Winner|Loser)$/i);
+  if (m) {
+    const label = m[1].toLowerCase() === 'quarterfinal' ? '1/4决赛' : '半决赛';
+    const suffix = m[3].toLowerCase() === 'winner' ? '胜者' : '负者';
+    return label + '第' + m[2] + '场' + suffix;
+  }
   for (const key in EN_TO_CN) {
     if (en.includes(key) || key.includes(en)) return EN_TO_CN[key];
   }
@@ -867,11 +890,15 @@ function renderPanels() {
   $updateTime.textContent = lastUpdate + ' 更新';
 
   upcoming.forEach(function(m) { m._status = getStatus(m.time); });
-  $upcomingPanel.innerHTML = upcoming.filter(function(m) {
+  var filteredUpcoming = upcoming.filter(function(m) {
     const [sc] = m._status;
     if (sc !== 'ended') return true;
     return m.isEnded || m.liveScore;
-  }).map(function(m) {
+  });
+  if (filteredUpcoming.length === 0) {
+    $upcomingPanel.innerHTML = '<div style="text-align:center;padding:40px 0;color:#888;font-size:0.85rem">暂无更多待开赛程，刷新数据试试</div>';
+  } else {
+    $upcomingPanel.innerHTML = filteredUpcoming.map(function(m) {
     const isEndedLive = m.isEnded === true;
     const [statusClass, statusText] = isEndedLive ? ['ended', ''] : m._status;
     const showScore = isEndedLive ? (m.score || m.liveScore) : (m.liveScore || m.score);
@@ -906,7 +933,9 @@ function renderPanels() {
         <div class="ai-reason">${m.reason || ''}</div>
       </div>
     </div>
-  `}).join('');
+    `
+    }).join('');
+  }
 
   $settledPanel.innerHTML = settled.map(function(m) {
     var key = m.homeName + '|' + m.awayName;
@@ -1029,7 +1058,7 @@ async function doRefresh() {
   try {
     const base = 'https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates=';
     const wcStart = new Date(2026, 5, 11);
-    const wcEnd = new Date(2026, 5, 18);
+    const wcEnd = new Date(2026, 6, 20);
     const ranges = [];
     for (var rd = new Date(wcStart); rd <= wcEnd; rd.setDate(rd.getDate() + 1)) {
       var y1 = rd.getFullYear() + String(rd.getMonth() + 1).padStart(2, '0') + String(rd.getDate()).padStart(2, '0');
@@ -1038,90 +1067,117 @@ async function doRefresh() {
       ranges.push(y1 + '-' + y2);
     }
 
-    const allEvents = [];
+    // 按距离今天远近排序，首批拿到最近日期的比赛
+    var todayTs = new Date().setHours(0,0,0,0);
+    ranges.sort(function(a, b) {
+      var da = Math.abs(new Date(a.substr(0,4)+'-'+a.substr(4,2)+'-'+a.substr(6,2)).getTime() - todayTs);
+      var db = Math.abs(new Date(b.substr(0,4)+'-'+b.substr(4,2)+'-'+b.substr(6,2)).getTime() - todayTs);
+      return da - db;
+    });
+
     const seen = new Set();
-
-    // 并行请求所有日期范围
-    const results = await Promise.allSettled(ranges.map(async (range) => {
-      const url = base + range;
-      try {
-        let resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
-        if (!resp.ok) {
-          resp = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url));
-        }
-        if (!resp.ok) return [];
-        const data = await resp.json();
-        return data.events || [];
-      } catch { return []; }
-    }));
-
-    for (const r of results) {
-      if (r.status !== 'fulfilled') continue;
-      r.value.forEach(ev => {
-        const id = ev.id;
-        if (!seen.has(id)) { seen.add(id); allEvents.push(ev); }
-      });
-    }
-
     const newSettled = [];
     const newUpcoming = [];
 
-    allEvents.forEach(ev => {
-      const comp = (ev.competitions || [])[0];
-      if (!comp) return;
-      const teams = comp.competitors || [];
-      if (teams.length < 2) return;
-      const hNameEn = teams[0].team?.displayName || teams[0].team?.shortDisplayName || '?';
-      const aNameEn = teams[1].team?.displayName || teams[1].team?.shortDisplayName || '?';
-      const hName = cnName(hNameEn);
-      const aName = cnName(aNameEn);
-      const hFlag = FLAG_MAP[hName] || '';
-      const aFlag = FLAG_MAP[aName] || '';
-
-      const status = comp.status || {};
-      const isCompleted = status.type?.completed === true;
-      const isLive = status.type?.state === 'in';
-      const hScore = teams[0].score || '0';
-      const aScore = teams[1].score || '0';
-      const scoreStr = isCompleted || isLive ? `${hScore} : ${aScore}` : '';
-
-      let time = '';
-      let matchTs = 0;
-      if (ev.date) {
-        const d = new Date(ev.date);
-        time = `${d.getMonth()+1}月${d.getDate()}日 ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-        matchTs = new Date(2026, d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), 0).getTime();
-      }
-
-      if (isCompleted) {
-        // 从 displayClock 解析比赛实际时长（如 "90'+7'" → 97分钟）
-        var clock = status.displayClock || '';
-        var durationSec = 5400;
-        var cm = clock.match(/^(\d+)'(\+(\d+)')?/);
-        if (cm) durationSec = parseInt(cm[1]) * 60 + (parseInt(cm[3]) || 0) * 60;
-        newSettled.push({
-          home: hFlag, homeName: hName, away: aFlag, awayName: aName,
-          time, league: '', score: scoreStr, matchTs,
-          duration: durationSec
-        });
-      } else if (time) {
-        var liveEntry = {
-          home: hFlag, homeName: hName, away: aFlag, awayName: aName,
-          time, league: '', liveScore: isLive ? scoreStr : null
-        };
-        if (isLive) {
-          var lclock = status.displayClock || '';
-          var m2 = lclock.match(/^(\d+)'(\+(\d+)')?/);
-          if (m2) {
-            liveEntry._espnClockMin = parseInt(m2[1]) + (parseInt(m2[3]) || 0);
-            liveEntry._clockFetchedAt = Date.now();
+    // 分批并发请求+逐批渲染（每批 6 个）
+    const batchSize = 6;
+    for (var bi = 0; bi < ranges.length; bi += batchSize) {
+      const batch = ranges.slice(bi, bi + batchSize);
+      const batchResults = await Promise.allSettled(batch.map(async (range) => {
+        const url = base + range;
+        try {
+          let resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+          if (!resp.ok) {
+            resp = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url));
           }
-        }
-        newUpcoming.push(liveEntry);
-      }
-    });
+          if (!resp.ok) return [];
+          const data = await resp.json();
+          return data.events || [];
+        } catch { return []; }
+      }));
 
-    // 倒序排列（最新比赛在前），直接用已计算的时间戳
+      // 处理本批事件并加入数组
+      for (const r of batchResults) {
+        if (r.status !== 'fulfilled') continue;
+        r.value.forEach(ev => {
+          const id = ev.id;
+          if (seen.has(id)) return; seen.add(id);
+          const comp = (ev.competitions || [])[0];
+          if (!comp) return;
+          const teams = comp.competitors || [];
+          if (teams.length < 2) return;
+          const hNameEn = teams[0].team?.displayName || teams[0].team?.shortDisplayName || '?';
+          const aNameEn = teams[1].team?.displayName || teams[1].team?.shortDisplayName || '?';
+          const hName = cnName(hNameEn);
+          const aName = cnName(aNameEn);
+          const hFlag = FLAG_MAP[hName] || '';
+          const aFlag = FLAG_MAP[aName] || '';
+          const leagueNote = comp.altGameNote || '';
+          const lgMatch = leagueNote.match(/Group (\w+)/);
+          let league = lgMatch ? lgMatch[1] + '组' : '';
+          if (!league) {
+            const enName = hNameEn + aNameEn;
+            if (/Group [A-Z] (Winner|2nd)|Third Place Group/i.test(enName)) league = '1/16决赛';
+            else if (/Round of 32/i.test(enName)) league = '1/8决赛';
+            else if (/Round of 16/i.test(enName)) league = '1/4决赛';
+            else if (/Quarterfinal/i.test(enName)) league = '半决赛';
+            else if (/Semifinal.*Loser/i.test(enName)) league = '季军赛';
+            else if (/Semifinal/i.test(enName)) league = '决赛';
+          }
+
+          const status = comp.status || {};
+          const isCompleted = status.type?.completed === true;
+          const isLive = status.type?.state === 'in';
+          const hScore = teams[0].score || '0';
+          const aScore = teams[1].score || '0';
+          const scoreStr = isCompleted || isLive ? `${hScore} : ${aScore}` : '';
+
+          let time = '';
+          let matchTs = 0;
+          if (ev.date) {
+            const d = new Date(ev.date);
+            time = `${d.getMonth()+1}月${d.getDate()}日 ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+            matchTs = new Date(2026, d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), 0).getTime();
+          }
+
+          if (isCompleted) {
+            var clock = status.displayClock || '';
+            var durationSec = 5400;
+            var cm = clock.match(/^(\d+)'(\+(\d+)')?/);
+            if (cm) durationSec = parseInt(cm[1]) * 60 + (parseInt(cm[3]) || 0) * 60;
+            newSettled.push({
+              home: hFlag, homeName: hName, away: aFlag, awayName: aName,
+              time, league, score: scoreStr, matchTs,
+              duration: durationSec
+            });
+          } else if (time) {
+            var liveEntry = {
+              home: hFlag, homeName: hName, away: aFlag, awayName: aName,
+              time, league, liveScore: isLive ? scoreStr : null
+            };
+            if (isLive) {
+              var lclock = status.displayClock || '';
+              var m2 = lclock.match(/^(\d+)'(\+(\d+)')?/);
+              if (m2) {
+                liveEntry._espnClockMin = parseInt(m2[1]) + (parseInt(m2[3]) || 0);
+                liveEntry._clockFetchedAt = Date.now();
+              }
+            }
+            newUpcoming.push(liveEntry);
+          }
+        });
+      }
+
+      // 本批处理完即渲染（首次加载时尽快出内容）
+      newSettled.sort((a, b) => b.matchTs - a.matchTs);
+      settled = newSettled;
+      upcoming = newUpcoming.length > 0 ? newUpcoming : upcoming;
+      if (bi === 0) { disclaimerShown = true; initialized = true; }
+      renderPanels();
+      syncTrackHeight();
+    }
+
+    // 最终排序
     newSettled.sort((a, b) => b.matchTs - a.matchTs);
 
     // 拉取小组积分榜 + 构建动态近期战绩
@@ -1133,13 +1189,13 @@ async function doRefresh() {
     }
 
     // 为 ESPN 数据补充 AI 竞猜比分和组名
-    var aiMap = {}, lgMap = {};
-    DEFAULT_SETTLED.forEach(function(d) { aiMap[d.homeName + '|' + d.awayName] = d.aiScore; lgMap[d.homeName + '|' + d.awayName] = d.league; });
-    DEFAULT_UPCOMING.forEach(function(d) { lgMap[d.homeName + '|' + d.awayName] = d.league; });
+    var aiMap = {}, lgMap = {}, teamGroup = {};
+    DEFAULT_SETTLED.forEach(function(d) { aiMap[d.homeName + '|' + d.awayName] = d.aiScore; lgMap[d.homeName + '|' + d.awayName] = d.league; teamGroup[d.homeName] = d.league; teamGroup[d.awayName] = d.league; });
+    DEFAULT_UPCOMING.forEach(function(d) { lgMap[d.homeName + '|' + d.awayName] = d.league; teamGroup[d.homeName] = d.league; teamGroup[d.awayName] = d.league; });
     newSettled.forEach(function(m) {
       var key = m.homeName + '|' + m.awayName;
       m.aiScore = aiMap[key];
-      m.league = lgMap[key] || m.league;
+      m.league = lgMap[key] || teamGroup[m.homeName] || teamGroup[m.awayName] || m.league;
       if (!m.aiScore) {
         if (predictionStore[key]) {
           m.aiScore = predictionStore[key].prediction;
@@ -1159,22 +1215,29 @@ async function doRefresh() {
       DEFAULT_UPCOMING.forEach(function(d) { defLg[d.homeName + '|' + d.awayName] = d.league; });
       newUpcoming.forEach(function(m) {
         var key = m.homeName + '|' + m.awayName;
-        m.league = defLg[key] || '小组赛';
+        m.league = defLg[key] || teamGroup[m.homeName] || teamGroup[m.awayName] || m.league;
       });
     }
     upcoming = newUpcoming.length > 0 ? newUpcoming : upcoming;
-    // 比赛进行中的直接取赛前竞猜缓存，不重新分析
+    // 比赛进行中的取赛前竞猜缓存；缓存缺失时补算一次（新增赛程首次出现即为 live 的场景）
     if (newUpcoming.length > 0) {
       for (var ui = 0; ui < upcoming.length; ui++) {
         var um = upcoming[ui];
         if (um.liveScore) {
           var pk = um.homeName + '|' + um.awayName;
           var cp = predictionStore[pk];
-          if (cp) {
-            um.pick = cp.pick;
-            um.prediction = cp.prediction;
-            um.reason = cp.reason;
+          if (!cp) {
+            cp = predictMatch(um.homeName, um.awayName, settled, um.league);
+            // 转为主队视角，与 populatePredictions 保持一致
+            if (cp.pick !== '平局') {
+              var pWinner = cp.pick.split(' ')[0];
+              cp.pick = pWinner === um.homeName ? (um.homeName + ' 胜') : (um.homeName + ' 负');
+            }
+            predictionStore[pk] = cp;
           }
+          um.pick = cp.pick;
+          um.prediction = cp.prediction;
+          um.reason = cp.reason;
         }
       }
     }
@@ -1183,8 +1246,9 @@ async function doRefresh() {
       updatedUpcoming = true;
     }
 
+    var changed = false;
     if (newSettled.length > 0) {
-      var changed = !initialized;
+      changed = !initialized;
       if (!changed) {
         changed = newSettled.length !== oldSettled.length;
         if (!changed) {
@@ -1193,27 +1257,22 @@ async function doRefresh() {
           }
         }
       }
-      if (changed) {
-        var nd = new Date(); lastUpdate = (nd.getMonth()+1) + '月' + nd.getDate() + '日 ' + String(nd.getHours()).padStart(2,'0') + ':' + String(nd.getMinutes()).padStart(2,'0');
-        renderPanels();
-        syncTrackHeight();
-        sessionStorage.setItem('wc2026_cache_v3', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
-      } else if (updatedUpcoming) {
-        lastUpdate = (new Date().getMonth()+1) + '月' + new Date().getDate() + '日 ' + String(new Date().getHours()).padStart(2,'0') + ':' + String(new Date().getMinutes()).padStart(2,'0');
-        renderPanels();
-        syncTrackHeight();
-        sessionStorage.setItem('wc2026_cache_v3', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
-      }
       disclaimerShown = true;
-      $disc.innerHTML = '数据更新于 ' + lastUpdate + '<br>AI 分析基于球队排名/本届战绩/出线形势/历史交锋';
       initialized = true;
     } else if (!initialized) {
-      lastUpdate = (new Date().getMonth()+1) + '月' + new Date().getDate() + '日 ' + String(new Date().getHours()).padStart(2,'0') + ':' + String(new Date().getMinutes()).padStart(2,'0');
       disclaimerShown = true;
+      initialized = true;
       renderPanels();
       syncTrackHeight();
-      initialized = true;
-      sessionStorage.setItem('wc2026_cache_v3', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, standings: groupStandings, dRecent: dynamicRecent}));
+    }
+
+    // 统一渲染入口：每次刷新都更新时间戳和面板
+    var nd = new Date(); lastUpdate = (nd.getMonth()+1) + '月' + nd.getDate() + '日 ' + String(nd.getHours()).padStart(2,'0') + ':' + String(nd.getMinutes()).padStart(2,'0');
+    $disc.innerHTML = '数据更新于 ' + lastUpdate + '<br>AI 分析基于球队排名/本届战绩/出线形势/历史交锋';
+    renderPanels();
+    syncTrackHeight();
+    if (changed || updatedUpcoming) {
+      sessionStorage.setItem('wc2026_cache_v3', JSON.stringify({settled: settled, lastUpdate: lastUpdate, upcoming: upcoming, pStore: predictionStore, dRecent: dynamicRecent}));
     }
 
     // 积分榜后台加载，不阻塞页面渲染
@@ -1324,6 +1383,9 @@ async function pollLiveScores() {
         m.score = e.score;
         m.duration = e.duration;
         m.isEnded = true;
+        // 赛后从 predictionStore 回填 AI 预测，避免显示"待分析"
+        var cp2 = predictionStore[key];
+        if (cp2 && cp2.pick) { m.pick = cp2.pick; m.prediction = cp2.prediction; m.reason = cp2.reason; }
         changed = true;
       } else if (e.live) {
         if (e.espnClockMin != null) { m._espnClockMin = e.espnClockMin; m._clockFetchedAt = Date.now(); changed = true; }
