@@ -139,6 +139,10 @@
     </div>
   </div>
 
+  <div id="offlineBanner" style="display:none;background:#e53935;color:#fff;text-align:center;padding:8px;font-size:0.8rem;position:sticky;top:0;z-index:200;">
+    当前离线网络，数据可能无法刷新
+  </div>
+
   <div class="swipe-wrap">
     <div class="swipe-track" id="swipeTrack">
       <div class="swipe-panel" id="upcomingPanel"></div>
@@ -150,6 +154,23 @@
 </div>
 
 <script>
+// 原始常量
+const MATCH_DURATION_DEFAULT = 5400; // 默认比赛时长（秒）
+const POLL_INTERVAL = 60000; // 轮询间隔（毫秒）
+const REFRESH_SAFETY_TIMEOUT = 15000; // 刷新安全超时（毫秒）
+const EMERGENCY_TIMEOUT = 20000; // 紧急兜底超时（毫秒）
+const SCORE_DIFF_HIGH = 60;
+const SCORE_DIFF_MEDIUM = 40;
+const SCORE_DIFF_LOW = 30;
+const SCORE_DIFF_SMALL = 10;
+const SCORE_DIFF_MINOR = 3;
+
+// 新增常量
+const FIRST_HALF_END_MIN = 48;
+const HALFTIME_END_MIN = 63;
+const MATCH_MAX_MIN = 105;
+const LIVE_THRESHOLD_MIN = 120; // 足球比赛常规+补时合理上限（分钟）
+
 // 静态兜底数据
 const DEFAULT_SETTLED = [
   { home: '🇦🇺', homeName: '澳大利亚', away: '🇹🇷', awayName: '土耳其', time: '6月14日 12:00', league: 'D组', score: '2 : 0', aiScore: '1 : 0' },
@@ -229,9 +250,6 @@ function cnName(en) {
     const label = m[1].toLowerCase() === 'quarterfinal' ? '1/4决赛' : '半决赛';
     const suffix = m[3].toLowerCase() === 'winner' ? '胜者' : '负者';
     return label + '第' + m[2] + '场' + suffix;
-  }
-  for (const key in EN_TO_CN) {
-    if (en.includes(key) || key.includes(en)) return EN_TO_CN[key];
   }
   return en;
 }
@@ -377,7 +395,7 @@ function predictMatch(homeName, awayName, settledMatches, league) {
   }
 
   // 3. 出线形势修正
-  if (league && groupStandings) {
+  if (league && groupStandings && league.includes('组')) {
     const groupKey = league.replace('组', '');
     const group = groupStandings[groupKey];
     if (group && group.length >= 4) {
@@ -433,23 +451,23 @@ function predictMatch(homeName, awayName, settledMatches, league) {
   const aAtk = atkTier(ar);
 
   let pick, prediction;
-  if (diff >= 60) {
+  if (diff >= SCORE_DIFF_HIGH) {
     const hg = 3 + Math.floor((hAtk - aAtk + 2) / 2);
     const lg = Math.max(0, aAtk - 1);
     prediction = higher === homeName ? (hg + ' : ' + lg) : (lg + ' : ' + hg);
     pick = higher + ' 胜';
-  } else if (diff >= 40) {
+  } else if (diff >= SCORE_DIFF_MEDIUM) {
     const hg = 2 + Math.floor((hAtk - aAtk + 1) / 2);
     const lg = Math.max(0, aAtk - 1);
     prediction = higher === homeName ? (hg + ' : ' + lg) : (lg + ' : ' + hg);
     pick = higher + ' 胜';
-  } else if (diff >= 30) {
+  } else if (diff >= SCORE_DIFF_LOW) {
     prediction = higher === homeName ? '2 : 1' : '1 : 2';
     pick = higher + ' 胜';
-  } else if (diff >= 10) {
+  } else if (diff >= SCORE_DIFF_SMALL) {
     prediction = higher === homeName ? '1 : 0' : '0 : 1';
     pick = higher + ' 胜';
-  } else if (diff >= 3) {
+  } else if (diff >= SCORE_DIFF_MINOR) {
     prediction = higher === homeName ? '1 : 0' : '0 : 1';
     pick = higher + ' 胜';
   } else {
@@ -498,11 +516,11 @@ function predictMatch(homeName, awayName, settledMatches, league) {
 
   // 精简理由
   let reason, verdict;
-  if (diff >= 60) verdict = '稳操胜券';
-  else if (diff >= 40) verdict = '明显占优';
-  else if (diff >= 30) verdict = '优势不小';
-  else if (diff >= 10) verdict = '胜算较高';
-  else if (diff >= 3) verdict = '略胜一筹';
+  if (diff >= SCORE_DIFF_HIGH) verdict = '稳操胜券';
+  else if (diff >= SCORE_DIFF_MEDIUM) verdict = '明显占优';
+  else if (diff >= SCORE_DIFF_LOW) verdict = '优势不小';
+  else if (diff >= SCORE_DIFF_SMALL) verdict = '胜算较高';
+  else if (diff >= SCORE_DIFF_MINOR) verdict = '略胜一筹';
   else verdict = '势均力敌';
 
   if (pick !== '平局') verdict = higher + verdict;
@@ -614,7 +632,7 @@ let settled = [...DEFAULT_SETTLED];
 // 为硬编码的已完赛数据补充比赛时长（默认90分钟）
 (function() {
   settled.forEach(m => {
-    m.duration = 5400;
+    m.duration = MATCH_DURATION_DEFAULT;
   });
 })();
 let DEFAULT_UPCOMING = [
@@ -728,23 +746,23 @@ function switchTab(idx) {
 document.addEventListener('DOMContentLoaded', () => {
   console.log('[WorldCup] DOM loaded, v250616a');
 
-  // 兜底：哪怕一切崩溃，至少把按钮恢复
-  window._emergencyTimer = setTimeout(function() {
-    var b = document.getElementById('refreshBtn');
+  // 兜底：统一 recovery timer，20 秒后恢复按钮/兜底渲染
+  window._recoveryTimer = setTimeout(function() {
+    let b = document.getElementById('refreshBtn');
     if (b && b.disabled) {
       b.disabled = false;
       b.textContent = '🔄 刷新数据';
-      console.warn('[WorldCup] 紧急兜底触发，按钮已恢复');
+      console.warn('[WorldCup] recovery timer 触发，按钮已恢复');
     }
-    var up = document.getElementById('upcomingPanel');
-    var sp = document.getElementById('settledPanel');
+    let up = document.getElementById('upcomingPanel');
+    let sp = document.getElementById('settledPanel');
     if (up && !up.innerHTML.trim()) {
       up.innerHTML = '<div style="text-align:center;padding:40px;color:#888">网络超时，请<a href="javascript:location.reload()" style="color:#ffd700">重新加载</a></div>';
     }
     if (sp && !sp.innerHTML.trim()) {
       sp.innerHTML = '<div style="text-align:center;padding:40px;color:#888">网络超时，请<a href="javascript:location.reload()" style="color:#ffd700">重新加载</a></div>';
     }
-  }, 20000);
+  }, EMERGENCY_TIMEOUT);
   $wrap = document.querySelector('.swipe-wrap');
   if (!$wrap) return;
   $track = document.getElementById('swipeTrack');
@@ -791,7 +809,7 @@ document.addEventListener('DOMContentLoaded', () => {
         settled = data.settled;
         // 兼容旧缓存：补充缺失的 duration（默认90分钟）
         settled.forEach(function(m) {
-          if (!m.duration) m.duration = 5400;
+          if (!m.duration) m.duration = MATCH_DURATION_DEFAULT;
         });
         lastUpdate = data.lastUpdate || '6月14日';
         if (Array.isArray(data.upcoming)) { upcoming = data.upcoming; }
@@ -804,13 +822,14 @@ document.addEventListener('DOMContentLoaded', () => {
         cacheOK = true;
         renderPanels();
         syncTrackHeight();
-        clearTimeout(window._emergencyTimer);
+        clearTimeout(window._recoveryTimer);
       } else {
         // 缓存格式异常，清除后走正常刷新流程
         sessionStorage.removeItem('wc2026_cache_v3');
       }
     } catch(e) {
       // JSON 解析失败，清除脏缓存
+      console.error('[WorldCup] cache parse error:', e);
       sessionStorage.removeItem('wc2026_cache_v3');
     }
   }
@@ -821,6 +840,13 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   if (cacheOK) { pollLiveScores(); }
+
+  // 页面卸载时清理定时器
+  window.addEventListener('beforeunload', () => {
+    clearTimeout(livePollTimer);
+    clearInterval(minuteRefreshTimer);
+    clearTimeout(window._recoveryTimer);
+  });
 });
 
 let livePollTimer = null;
@@ -842,26 +868,27 @@ function parseMatchTime(timeStr) {
 /*
  * 推算比赛当前分钟数。
  * 优先使用 ESPN 接口返回的精确分钟数（_espnClockMin），基于 fetch 时间戳递推。
- * 若无 ESPN 数据，兜底按开球时间 + 自由流逝时间估算，中场休息（45~60分钟区间）返回 -1。
+ * 若无 ESPN 数据，兜底按开球后的自由流逝时间估算，中场休息（上半场结束~下半场开场）返回 -1。
  */
 function getMatchMinute(m) {
-  if (m._espnClockMin != null && m._clockFetchedAt) {
-    return m._espnClockMin + Math.floor((Date.now() - m._clockFetchedAt) / 60000);
+  if (m.matchTs && m._espnClockMin == null && m._clockFetchedAt == null) {
+    const elapsed = Math.floor((Date.now() - m.matchTs) / POLL_INTERVAL);
+    if (elapsed < 0) return 0;
+    if (elapsed <= FIRST_HALF_END_MIN) return elapsed;
+    if (elapsed <= HALFTIME_END_MIN) return -1;
+    return Math.min(MATCH_MAX_MIN, elapsed - 15);
   }
-  // 兜底：按开球后的自由流逝时间推算，中场休息时段返回 -1
-  const ts = parseMatchTime(m.time);
-  const elapsed = Math.floor((Date.now() - ts) / 60000);
-  if (elapsed < 0) return 0;
-  if (elapsed <= 48) return elapsed;
-  if (elapsed <= 63) return -1;
-  return Math.min(105, elapsed - 15);
+  if (m._espnClockMin != null && m._clockFetchedAt) {
+    return m._espnClockMin + Math.floor((Date.now() - m._clockFetchedAt) / POLL_INTERVAL);
+  }
+  return -1;
 }
 
 function getStatusFromTs(matchTs) {
   const now = Date.now();
-  const diff = (now - matchTs) / 60000;
+  const diff = (now - matchTs) / POLL_INTERVAL;
   if (diff < 0) return ['upcoming', '待开赛'];
-  if (diff < 150) return ['live', '比赛中'];
+  if (diff < LIVE_THRESHOLD_MIN) return ['live', '比赛中'];
   return ['ended', '已完赛'];
 }
 
@@ -875,15 +902,21 @@ function minuteText(m) {
   return v === -1 ? '中场休息' : v + '分钟';
 }
 
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+const esc = (text) => (text || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function pickHtml(m) {
   if (!m.pick || m.pick === '平局') return '';
   var idx = m.pick.lastIndexOf(' ');
-  if (idx === -1) return m.pick;
-  var name = m.pick.substring(0, idx);
+  if (idx === -1) return escapeHtml(m.pick);
+  var name = escapeHtml(m.pick.substring(0, idx));
   var result = m.pick.substring(idx + 1);
   if (result === '胜') return name + ' <span style="color:#00b894;font-weight:600">胜</span>';
   if (result === '负') return name + ' <span style="color:#e17055;font-weight:600">负</span>';
-  return m.pick;
+  return escapeHtml(m.pick);
 }
 
 function renderPanels() {
@@ -892,9 +925,10 @@ function renderPanels() {
 
   upcoming.forEach(function(m) { m._status = getStatus(m.time); });
   var filteredUpcoming = upcoming.filter(function(m) {
+    if (m.isEnded) return false;
     const [sc] = m._status;
-    if (sc !== 'ended') return true;
-    return m.isEnded || m.liveScore;
+    if (sc === 'ended') return false;
+    return true;
   });
   if (filteredUpcoming.length === 0) {
     $upcomingPanel.innerHTML = '<div style="text-align:center;padding:40px 0;color:#888;font-size:0.85rem">暂无更多待开赛程，刷新数据试试</div>';
@@ -917,16 +951,16 @@ function renderPanels() {
     return `
     <div class="match-card">
       <div class="match-header">
-        <span class="match-time">${m.time}</span>
+        <span class="match-time">${esc(m.time)}</span>
         ${statusHtml}
-        <span class="match-league">${m.league}</span>
+        <span class="match-league">${esc(m.league)}</span>
       </div>
       <div class="match-teams">
-        <div class="team"><div class="team-flag">${(m.home || '🚩')}</div><div class="team-name">${m.homeName}</div></div>
+        <div class="team"><div class="team-flag">${(m.home || '🚩')}</div><div class="team-name">${esc(m.homeName)}</div></div>
         ${showScore
           ? `<div style="text-align:center">${liveScoreHtml}</div>`
           : '<div class="vs">VS</div>'}
-        <div class="team"><div class="team-flag">${(m.away || '🚩')}</div><div class="team-name">${m.awayName}</div></div>
+        <div class="team"><div class="team-flag">${(m.away || '🚩')}</div><div class="team-name">${esc(m.awayName)}</div></div>
       </div>
       <div class="ai-pick">
         ${(m.pick || m.prediction) ? '<span class="ai-tag">🤖 AI 赛前竞猜</span>' : ''}
@@ -945,17 +979,17 @@ function renderPanels() {
     return '' +
     '<div class="match-card settled">' +
       '<div class="match-header">' +
-        '<span class="match-time">' + m.time + '</span>' +
+        '<span class="match-time">' + esc(m.time) + '</span>' +
         '<span class="match-status ended">⌛️比赛时长 ' + formatDuration(m.duration || 0) + '</span>' +
-        '<span class="match-league">' + m.league + '</span>' +
+        '<span class="match-league">' + esc(m.league) + '</span>' +
       '</div>' +
       '<div class="match-teams">' +
-        '<div class="team"><div class="team-flag">' + (m.home || '🚩') + '</div><div class="team-name">' + m.homeName + '</div></div>' +
+        '<div class="team"><div class="team-flag">' + (m.home || '🚩') + '</div><div class="team-name">' + esc(m.homeName) + '</div></div>' +
         '<div style="text-align:center">' +
           '<div class="score-display">' + m.score + '</div>' +
           '<div style="font-size:10px;color:#888;margin-top:2px">AI竞猜 ' + prediction + '</div>' +
         '</div>' +
-        '<div class="team"><div class="team-flag">' + (m.away || '🚩') + '</div><div class="team-name">' + m.awayName + '</div></div>' +
+        '<div class="team"><div class="team-flag">' + (m.away || '🚩') + '</div><div class="team-name">' + esc(m.awayName) + '</div></div>' +
       '</div>' +
     '</div>';
   }).join('') + '<div style="text-align:center;color:#444;font-size:0.7rem;padding:10px 0 20px">没有更多了~</div>';
@@ -990,7 +1024,7 @@ async function fetchStandings() {
       });
     });
     return groups;
-  } catch(e) { return null; }
+  } catch(e) { console.error('[WorldCup] fetchStandings error:', e); return null; }
 }
 
 /*
@@ -1004,7 +1038,11 @@ function buildDynamicRecent(settledMatches) {
   const roundMap = {};  // 每队出场次数计数，用于标记轮次
   // 按时间升序排列：轮次标签正确（首轮→第N轮），且最后写入的为最新比赛
   const sorted = [...settledMatches].sort((a, b) => (a.matchTs || 0) - (b.matchTs || 0));
+  const seen = new Set();
   sorted.forEach(function(m) {
+    const matchKey = m.homeName + '|' + m.awayName + '|' + m.time + '|' + m.score;
+    if (seen.has(matchKey)) return;
+    seen.add(matchKey);
     const parts = m.score.split(' : ');
     const hScore = parseInt(parts[0]), aScore = parseInt(parts[1]);
     const hR = hScore > aScore ? '胜' : (hScore === aScore ? '平' : '负');
@@ -1035,21 +1073,21 @@ async function doRefresh() {
   btn.innerHTML = '<span class="spin-icon">⏳</span> 刷新中...';
   btn.disabled = true;
 
-  // 安全兜底：15秒后强制恢复按钮，避免永远卡在"刷新中..."
-  var safetyTimer = setTimeout(function() {
-    clearTimeout(window._emergencyTimer);
+  // 安全兜底：15秒后强制恢复按钮，避免在线但接口卡死时永远卡住
+  const recoveryTimer = setTimeout(function() {
+    clearTimeout(window._recoveryTimer);
     if (btn.disabled) {
       btn.disabled = false;
       btn.textContent = orig;
       if (!initialized) {
         settled = [...DEFAULT_SETTLED];
-        settled.forEach(function(m) { m.duration = 5400; });
+        settled.forEach(function(m) { m.duration = MATCH_DURATION_DEFAULT; });
         disclaimerShown = true;
         try { renderPanels(); syncTrackHeight(); } catch(e) {}
         initialized = true;
       }
     }
-  }, 15000);
+  }, REFRESH_SAFETY_TIMEOUT);
 
   if (!initialized) {
     $upcomingPanel.innerHTML = '<div style="text-align:center;padding:60px 0;color:#888;font-size:1rem"><span style="display:inline-block;animation:spin 0.8s linear infinite">⏳</span> 刷新中...</div>';
@@ -1061,18 +1099,18 @@ async function doRefresh() {
     const wcStart = new Date(2026, 5, 11);
     const wcEnd = new Date(2026, 6, 20);
     const ranges = [];
-    for (var rd = new Date(wcStart); rd <= wcEnd; rd.setDate(rd.getDate() + 1)) {
-      var y1 = rd.getFullYear() + String(rd.getMonth() + 1).padStart(2, '0') + String(rd.getDate()).padStart(2, '0');
-      var nx = new Date(rd); nx.setDate(nx.getDate() + 1);
-      var y2 = nx.getFullYear() + String(nx.getMonth() + 1).padStart(2, '0') + String(nx.getDate()).padStart(2, '0');
+    for (let rd = new Date(wcStart); rd <= wcEnd; rd.setDate(rd.getDate() + 1)) {
+      const y1 = rd.getFullYear() + String(rd.getMonth() + 1).padStart(2, '0') + String(rd.getDate()).padStart(2, '0');
+      const nx = new Date(rd); nx.setDate(nx.getDate() + 1);
+      const y2 = nx.getFullYear() + String(nx.getMonth() + 1).padStart(2, '0') + String(nx.getDate()).padStart(2, '0');
       ranges.push(y1 + '-' + y2);
     }
 
     // 按距离今天远近排序，首批拿到最近日期的比赛
-    var todayTs = new Date().setHours(0,0,0,0);
+    const todayTs = new Date().setHours(0,0,0,0);
     ranges.sort(function(a, b) {
-      var da = Math.abs(new Date(a.substr(0,4)+'-'+a.substr(4,2)+'-'+a.substr(6,2)).getTime() - todayTs);
-      var db = Math.abs(new Date(b.substr(0,4)+'-'+b.substr(4,2)+'-'+b.substr(6,2)).getTime() - todayTs);
+      const da = Math.abs(new Date(a.substr(0,4)+'-'+a.substr(4,2)+'-'+a.substr(6,2)).getTime() - todayTs);
+      const db = Math.abs(new Date(b.substr(0,4)+'-'+b.substr(4,2)+'-'+b.substr(6,2)).getTime() - todayTs);
       return da - db;
     });
 
@@ -1143,7 +1181,7 @@ async function doRefresh() {
 
           if (isCompleted) {
             var clock = status.displayClock || '';
-            var durationSec = 5400;
+            var durationSec = MATCH_DURATION_DEFAULT;
             var cm = clock.match(/^(\d+)'(\+(\d+)')?/);
             if (cm) durationSec = parseInt(cm[1]) * 60 + (parseInt(cm[3]) || 0) * 60;
             newSettled.push({
@@ -1313,12 +1351,15 @@ async function doRefresh() {
     setTimeout(() => { btn.textContent = orig; }, 2000);
   } catch (e) {
     console.warn('ESPN fetch failed, using local data:', e);
+    let userMsg = '网络异常，已用本地数据';
+    if (e instanceof TypeError) userMsg = '网络不通，已用本地数据';
+    else if (e instanceof SyntaxError) userMsg = '数据解析失败，已用本地数据';
     var nd = new Date();
     lastUpdate = (nd.getMonth()+1) + '月' + nd.getDate() + '日 ' + String(nd.getHours()).padStart(2,'0') + ':' + String(nd.getMinutes()).padStart(2,'0');
     if (!initialized) {
       settled = [...DEFAULT_SETTLED];
       // 补充比赛时长（默认90分钟）
-      settled.forEach(function(m) { m.duration = 5400; });
+      settled.forEach(function(m) { m.duration = MATCH_DURATION_DEFAULT; });
       disclaimerShown = true;
       renderPanels();
       syncTrackHeight();
@@ -1329,7 +1370,7 @@ async function doRefresh() {
       $disc.innerHTML = '数据更新于 ' + lastUpdate + '<br>AI 分析基于球队排名/本届战绩/出线形势/历史交锋';
     }
     scheduleLivePoll();
-    btn.textContent = '⚠ 网络失败，已用本地数据';
+    btn.textContent = '⚠ ' + userMsg;
     setTimeout(() => { btn.textContent = orig; }, 2500);
   }
   clearTimeout(safetyTimer);
@@ -1342,8 +1383,8 @@ function scheduleLivePoll() {
   // 只要有未结束的比赛就持续轮询，不只在 ESPN 确认 live 后才启动
   var hasUpcoming = upcoming.some(function(m) { return !m.isEnded; });
   if (hasUpcoming) {
-    livePollTimer = setTimeout(pollLiveScores, 60000);
-    minuteRefreshTimer = setInterval(function() { renderPanels(); syncTrackHeight(); }, 60000);
+    livePollTimer = setTimeout(pollLiveScores, POLL_INTERVAL);
+    minuteRefreshTimer = setInterval(function() { renderPanels(); syncTrackHeight(); }, POLL_INTERVAL);
   }
 }
 
@@ -1376,7 +1417,7 @@ async function pollLiveScores() {
       var aName = cnName(teams[1].team?.displayName || teams[1].team?.shortDisplayName || '?');
       var key = hName + '|' + aName;
       var scoreStr = (teams[0].score || '0') + ' : ' + (teams[1].score || '0');
-      var durationSec = 5400;
+      var durationSec = MATCH_DURATION_DEFAULT;
       var espnClockMin = 0;
       if (isCompleted) {
         var clock = status.displayClock || '';
@@ -1426,7 +1467,10 @@ async function pollLiveScores() {
     // 始终刷新面板，让比赛分钟数跟随本地时间更新
     renderPanels();
     syncTrackHeight();
-  } catch(e) {}
+  } catch(e) {
+    console.error('[WorldCup] pollLiveScores error:', e);
+    $disc.innerHTML = '实时更新暂停：网络异常，分钟数可能不准确<br>数据更新于 ' + lastUpdate + '<br>AI 分析基于球队排名/本届战绩/出线形势/历史交锋';
+  }
 
   scheduleLivePoll();
 }
